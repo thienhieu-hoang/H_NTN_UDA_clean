@@ -1,4 +1,7 @@
 __pycache__/
 *.h5
 *.mat
+*.sh
+*.out
+*.err
 Distribution/
