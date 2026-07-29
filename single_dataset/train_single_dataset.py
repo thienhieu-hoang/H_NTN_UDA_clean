@@ -495,7 +495,7 @@ def main():
             best_val_loss = avg_val_loss
             best_epoch    = epoch + 1
             if args.save_model:
-                model.save_weights(os.path.join(save_dir, 'best'))
+                model.save_weights(os.path.join(save_dir, 'best.weights.h5'))
                 # Write a small info file alongside the weights
                 with open(os.path.join(save_dir, 'best_epoch.txt'), 'w') as fh:
                     fh.write(f'best_epoch    = {best_epoch}\n'
@@ -505,9 +505,9 @@ def main():
 
     # ── Save final model ──────────────────────────────────────────────────────
     if args.save_model:
-        model.save_weights(os.path.join(save_dir, 'final'))
-        print(f'\n[Save] Final weights  -> {os.path.join(save_dir, "final")}')
-        print(f'[Save] Best  weights  -> {os.path.join(save_dir, "best")}'
+        model.save_weights(os.path.join(save_dir, 'final.weights.h5'))
+        print(f'\n[Save] Final weights  -> {os.path.join(save_dir, "final.weights.h5")}')
+        print(f'[Save] Best  weights  -> {os.path.join(save_dir, "best.weights.h5")}'
               f'  (epoch {best_epoch})')
 
     # Save training history (.mat)
@@ -636,16 +636,19 @@ def load_trained_model(save_dir: str,
     >>> H_pred = infer_channel(model, H_perfect_test, H_input_test,
     ...                        batch_size=16, lower_range=-1)
     """
-    model = CNNGenerator(n_blocks=n_blocks)
-    tag   = 'best' if use_best else 'final'
-    ckpt  = os.path.join(save_dir, tag)
+    filename = 'best.weights.h5' if use_best else 'final.weights.h5'
+    ckpt     = os.path.join(save_dir, filename)
+    if not os.path.exists(ckpt):
+        fallback = os.path.join(save_dir, 'best' if use_best else 'final')
+        if os.path.exists(fallback) or os.path.exists(fallback + '.index'):
+            ckpt = fallback
 
     # Build the model graph before loading weights
     dummy = tf.zeros((1, 132, 14, 2))
     model(dummy, training=False)
 
     model.load_weights(ckpt)
-    print(f'[Reload] {tag} weights loaded from: {ckpt}')
+    print(f'[Reload] {"best" if use_best else "final"} weights loaded from: {ckpt}')
     return model
 
 
