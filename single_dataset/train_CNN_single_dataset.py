@@ -167,20 +167,51 @@ def load_mat_data(mat_path: str, input_type: str):
                 H_perfect = mat[k].T
                 break
 
-    # 2. H_input key resolution with fallbacks (e.g. H_li, H_li_ori, H_prac)
-    input_key = {'prac': 'H_prac', 'li': 'H_li'}.get(input_type, 'H_li')
-    if input_key not in mat or mat[input_key].size == 0:
-        for alt in [input_key, 'H_li', 'H_li_ori', 'H_prac']:
-            if alt in mat and isinstance(mat[alt], np.ndarray) and mat[alt].size > 0:
-                input_key = alt
-                break
+    N_samples, n_subc, n_symb = H_perfect.shape
 
-    H_input = mat[input_key].T
+    # 2. H_input key resolution
+    if input_type in ['ls', 'ls_ori']:
+        # Sparse LS pilot reconstruction into 2D grid
+        ls_key = 'H_ls_pilots_ori' if input_type == 'ls_ori' and 'H_ls_pilots_ori' in mat else 'H_ls_pilots'
+        if ls_key not in mat:
+            for alt in ['H_ls_pilots', 'H_ls_pilots_ori', 'H_LS_comp', 'H_LS_full']:
+                if alt in mat and mat[alt].size > 0:
+                    ls_key = alt
+                    break
+
+        if ls_key not in mat or 'pilot_rows' not in mat or 'pilot_cols' not in mat:
+            raise KeyError(f"Unable to reconstruct sparse LS grid. Required keys '{ls_key}', "
+                           f"'pilot_rows', 'pilot_cols' not found in {mat_path}")
+
+        H_pilots   = mat[ls_key]                               # Shape [num_pilots, N_samples] or [N_samples, num_pilots]
+        pilot_rows = np.squeeze(mat['pilot_rows']).astype(int) - 1  # 1-indexed -> 0-indexed subcarriers
+        pilot_cols = np.squeeze(mat['pilot_cols']).astype(int) - 1  # 1-indexed -> 0-indexed symbols
+
+        # Ensure H_pilots is shape [N_samples, num_pilots]
+        if H_pilots.shape[0] != N_samples and H_pilots.shape[1] == N_samples:
+            H_pilots = H_pilots.T
+
+        # Construct sparse 2D channel grid (non-zero at pilots, zero elsewhere)
+        H_input = np.zeros((N_samples, n_subc, n_symb), dtype=np.complex64)
+        for i in range(N_samples):
+            H_input[i, pilot_rows, pilot_cols] = H_pilots[i, :]
+
+        input_key = f"{ls_key} (sparse 2D grid)"
+    else:
+        input_key_map = {'prac': 'H_prac', 'li': 'H_li', 'li_ori': 'H_li_ori'}
+        input_key = input_key_map.get(input_type, 'H_li')
+        if input_key not in mat or mat[input_key].size == 0:
+            for alt in [input_key, 'H_li', 'H_li_ori', 'H_prac']:
+                if alt in mat and isinstance(mat[alt], np.ndarray) and mat[alt].size > 0:
+                    input_key = alt
+                    break
+        H_input = mat[input_key].T
 
     H_perfect = H_perfect.astype(np.complex64)
     H_input   = H_input.astype(np.complex64)
     print(f'  Loaded H_perfect {H_perfect.shape}  |  H_input ({input_key}) {H_input.shape}')
     return H_perfect, H_input
+
 
 
 
@@ -401,8 +432,8 @@ def main():
                         choices=sorted(SNR_FOLDER_MAP),
                         help='Channel SNR in dB')
     parser.add_argument('--input-type', type=str, default=DEFAULT_INPUT_TYPE,
-                        choices=['prac', 'li'],
-                        help='Noisy estimate used as CNN input')
+                        choices=['prac', 'li', 'li_ori', 'ls', 'ls_ori'],
+                        help='Noisy estimate used as CNN input (prac, li, li_ori, ls, ls_ori)')
     parser.add_argument('--epochs', type=int,   default=DEFAULT_EPOCHS)
     parser.add_argument('--batch-size', type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument('--lr', type=float, default=DEFAULT_LR,
