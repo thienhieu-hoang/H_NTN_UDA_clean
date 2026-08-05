@@ -106,42 +106,82 @@ SNR_FOLDER_MAP = {
 }
 
 
-def get_data_path(data_root: str, snr: int) -> str:
-    """Return the absolute path to the .mat file for the requested SNR."""
-    snr_folder = SNR_FOLDER_MAP.get(snr)
-    if snr_folder is None:
-        raise ValueError(
-            f'SNR {snr} dB not recognised. Supported values: {sorted(SNR_FOLDER_MAP)}')
+def find_any_mat_file(base_dir: str) -> str:
+    """Recursively search base_dir for the first valid .mat file."""
+    if not os.path.exists(base_dir):
+        return None
+    for root, _, files in os.walk(base_dir):
+        for f in sorted(files):
+            if f.endswith('.mat'):
+                return os.path.join(root, f)
+    return None
+
+
+def get_data_path(data_root: str, snr: int, is_test_code: bool = False) -> str:
+    """
+    Return the absolute path to the .mat file for the requested SNR.
+    If the specified file is missing or changed, dynamically searches 
+    generatedChan/OpenNTN for any available .mat file.
+    """
+    openntn_root = os.path.join(PROJECT_ROOT, 'generatedChan', 'OpenNTN')
+    snr_folder   = SNR_FOLDER_MAP.get(snr, f'{snr}dB')
+
     if not data_root:
-        data_root = os.path.join(
-            PROJECT_ROOT, 'generatedChan', 'OpenNTN', DATA_FOLDER_NAME)
-    mat_path = os.path.join(data_root, snr_folder, 'channel_dur_randomizedUE.mat')
+        target_root = os.path.join(openntn_root, DATA_FOLDER_NAME)
+    else:
+        target_root = data_root
+
+    mat_path = os.path.join(target_root, snr_folder, 'channel_dur_randomizedUE.mat')
+
+    # Dynamic fallback if configured file does not exist
     if not os.path.isfile(mat_path):
-        raise FileNotFoundError(f'Data file not found:\n  {mat_path}')
+        fallback = find_any_mat_file(target_root) or find_any_mat_file(openntn_root)
+        if fallback:
+            print(f'[Data Fallback] Target path not found ({mat_path}).\n'
+                  f'  Dynamically using available .mat file -> {fallback}')
+            return fallback
+        raise FileNotFoundError(
+            f'Data file not found at:\n  {mat_path}\n'
+            f'  and no alternative .mat files found under: {openntn_root}')
+
     return mat_path
 
 
 def load_mat_data(mat_path: str, input_type: str):
     """
-    Load a .mat file and return numpy arrays.
+    Load a .mat file and return numpy arrays with flexible key fallback.
 
-    MATLAB layout : (14, 132, 512) = (n_symb, n_subc, N_samples)
-    After transpose: (N_samples, n_subc, n_symb) = (512, 132, 14)
-
-    Returns
-    -------
-    H_perfect : complex64  [N, n_subc, n_symb]
-    H_input   : complex64  [N, n_subc, n_symb]
+    MATLAB layout : (14, 132, N_samples) -> Transposed to: (N_samples, 132, 14)
     """
     mat = scipy.io.loadmat(mat_path)
-    H_perfect = mat['H_perfect'].T           # (14, 132, 512) -> (512, 132, 14)
-    input_key = {'prac': 'H_prac', 'li': 'H_li'}[input_type]
-    H_input   = mat[input_key].T
+    
+    # 1. H_perfect key resolution
+    if 'H_perfect' in mat and mat['H_perfect'].size > 0:
+        H_perfect = mat['H_perfect'].T
+    elif 'H_perfect_ori' in mat and mat['H_perfect_ori'].size > 0:
+        H_perfect = mat['H_perfect_ori'].T
+    else:
+        # Fallback: pick first 3D complex array
+        for k in mat.keys():
+            if not k.startswith('__') and isinstance(mat[k], np.ndarray) and mat[k].ndim == 3:
+                H_perfect = mat[k].T
+                break
+
+    # 2. H_input key resolution with fallbacks (e.g. H_li, H_li_ori, H_prac)
+    input_key = {'prac': 'H_prac', 'li': 'H_li'}.get(input_type, 'H_li')
+    if input_key not in mat or mat[input_key].size == 0:
+        for alt in [input_key, 'H_li', 'H_li_ori', 'H_prac']:
+            if alt in mat and isinstance(mat[alt], np.ndarray) and mat[alt].size > 0:
+                input_key = alt
+                break
+
+    H_input = mat[input_key].T
 
     H_perfect = H_perfect.astype(np.complex64)
     H_input   = H_input.astype(np.complex64)
-    print(f'  H_perfect {H_perfect.shape}  |  H_input ({input_key}) {H_input.shape}')
+    print(f'  Loaded H_perfect {H_perfect.shape}  |  H_input ({input_key}) {H_input.shape}')
     return H_perfect, H_input
+
 
 
 def split_indices(N: int, train_frac: float, val_frac: float, seed: int = 1234):
@@ -260,6 +300,43 @@ def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn):
     grads = tape.gradient(total_loss, model.trainable_variables)
     optimizer.apply_gradients(zip(grads, model.trainable_variables))
     return total_loss, est_loss
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# ONNX Model Export (Architecture + Weights for MATLAB & Python)
+# ────────────────────────────────────────────────────────────────────────────
+def export_model_to_onnx(model: tf.keras.Model, save_path: str,
+                         input_shape=(1, 132, 14, 2)):
+    """
+    Export full Keras model (architecture + learned weight parameters) to ONNX format.
+
+    The resulting .onnx file contains both the model architecture and trained weights.
+    It can be loaded in:
+      - Python: via `onnxruntime` or `onnx`
+      - MATLAB: via `importONNXNetwork('best.onnx', 'OutputLayerType', 'regression')`
+
+    Parameters
+    ----------
+    model       : Built tf.keras.Model / CNNGenerator instance
+    save_path   : Target filepath for the .onnx model (e.g. 'best.onnx')
+    input_shape : Input tensor shape tuple (batch, n_subc, n_symb, 2)
+    """
+    try:
+        import tf2onnx
+    except ImportError:
+        print('[ONNX] Installing tf2onnx package for ONNX model export ...')
+        import subprocess
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'tf2onnx'])
+        import tf2onnx
+
+    try:
+        # Build concrete tensor spec for conversion
+        spec = (tf.TensorSpec(input_shape, tf.float32, name='input_channel'),)
+        model_proto, _ = tf2onnx.convert.from_keras(
+            model, input_signature=spec, output_path=save_path)
+        print(f'[ONNX Export] Saved ONNX model (architecture + weights) -> {save_path}')
+    except Exception as e:
+        print(f'[ONNX Export Warning] Failed to export ONNX model: {e}')
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -495,7 +572,7 @@ def main():
             best_val_loss = avg_val_loss
             best_epoch    = epoch + 1
             if args.save_model:
-                model.save_weights(os.path.join(save_dir, 'best.weights.h5'))
+                export_model_to_onnx(model, os.path.join(save_dir, 'best.onnx'))
                 # Write a small info file alongside the weights
                 with open(os.path.join(save_dir, 'best_epoch.txt'), 'w') as fh:
                     fh.write(f'best_epoch    = {best_epoch}\n'
@@ -505,10 +582,11 @@ def main():
 
     # ── Save final model ──────────────────────────────────────────────────────
     if args.save_model:
-        model.save_weights(os.path.join(save_dir, 'final.weights.h5'))
-        print(f'\n[Save] Final weights  -> {os.path.join(save_dir, "final.weights.h5")}')
-        print(f'[Save] Best  weights  -> {os.path.join(save_dir, "best.weights.h5")}'
+        export_model_to_onnx(model, os.path.join(save_dir, 'final.onnx'))
+        print(f'\n[Save] Final ONNX model -> {os.path.join(save_dir, "final.onnx")}')
+        print(f'[Save] Best  ONNX model -> {os.path.join(save_dir, "best.onnx")}'
               f'  (epoch {best_epoch})')
+
 
     # Save training history (.mat)
     hist_path = os.path.join(save_dir, 'training_history.mat')
