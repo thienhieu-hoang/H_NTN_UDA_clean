@@ -604,12 +604,22 @@ def main():
             best_epoch    = epoch + 1
             if args.save_model:
                 export_model_to_onnx(model, os.path.join(save_dir, 'best.onnx'))
-                # Write a small info file alongside the weights
+                # Write detailed training configuration & metadata file alongside the weights
                 with open(os.path.join(save_dir, 'best_epoch.txt'), 'w') as fh:
-                    fh.write(f'best_epoch    = {best_epoch}\n'
-                             f'best_val_loss = {best_val_loss:.8f}\n'
-                             f'snr           = {args.snr}\n'
-                             f'input_type    = {args.input_type}\n')
+                    fh.write(f'best_epoch       = {best_epoch}\n'
+                             f'best_val_loss    = {best_val_loss:.8f}\n'
+                             f'snr              = {args.snr} dB\n'
+                             f'input_type       = {args.input_type}\n'
+                             f'total_epochs     = {args.epochs}\n'
+                             f'batch_size       = {args.batch_size}\n'
+                             f'learning_rate    = {args.lr}\n'
+                             f'n_blocks         = {args.n_blocks}\n'
+                             f'total_samples    = {N}\n'
+                             f'n_train_samples  = {len(idx_train)}\n'
+                             f'n_val_samples    = {len(idx_val)}\n'
+                             f'n_test_samples   = {len(idx_test)}\n'
+                             f'test_code_mode   = {args.test_code}\n'
+                             f'data_path        = {mat_path}\n')
 
     # ── Save final model ──────────────────────────────────────────────────────
     if args.save_model:
