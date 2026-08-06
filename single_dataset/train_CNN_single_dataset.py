@@ -449,6 +449,35 @@ def save_channel_plots_pdf(H_perf_sample: np.ndarray,
         print(f'[PDF Export Warning] Failed to export channel heatmaps: {e}')
 
 
+def save_loss_plot_pdf(history: dict, save_dir: str):
+    """
+    Plot and save training and validation/evaluation loss curves as a PDF.
+    """
+    try:
+        import matplotlib.pyplot as plt
+        os.makedirs(save_dir, exist_ok=True)
+
+        epochs = range(1, len(history['train_loss']) + 1)
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.plot(epochs, history['train_loss'], label='Training Loss', color='blue', linewidth=2)
+        ax.plot(epochs, history['val_loss'], label='Validation/Evaluation Loss', color='red', linewidth=2)
+
+        ax.set_title('Training and Validation/Evaluation Loss over Epochs', fontsize=14)
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('Loss (MSE)', fontsize=12)
+        ax.grid(True, linestyle='--', alpha=0.6)
+        ax.legend(fontsize=12)
+
+        plt.tight_layout()
+        pdf_path = os.path.join(save_dir, 'loss_history.pdf')
+        plt.savefig(pdf_path, format='pdf')
+        plt.close(fig)
+        print(f'[PDF Export] Loss history plot saved to: {pdf_path}')
+    except Exception as e:
+        print(f'[PDF Export Warning] Failed to export loss history plot: {e}')
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Inference: produce corrected complex channel
 # ────────────────────────────────────────────────────────────────────────────
@@ -722,6 +751,9 @@ def main():
         'best_epoch': best_epoch,
     })
     print(f'[Save] Training history -> {hist_path}')
+
+    # Save training loss curves plot PDF
+    save_loss_plot_pdf(history, save_dir)
 
     # ── Evaluation on VALIDATION set ─────────────────────────────────────────
     print('\n' + '─' * 58)
