@@ -370,6 +370,85 @@ def export_model_to_onnx(model: tf.keras.Model, save_path: str,
         print(f'[ONNX Export Warning] Failed to export ONNX model: {e}')
 
 
+def export_model_to_mat(model: tf.keras.Model, save_path: str):
+    """
+    Export trained model weight matrices to .mat format for easy, zero-dependency loading in MATLAB and Python.
+
+    Parameters
+    ----------
+    model     : Trained tf.keras.Model / CNNGenerator instance
+    save_path : Target filepath for the .mat model (e.g. 'best_net.mat')
+    """
+    try:
+        import scipy.io as sio
+        weights_dict = {}
+        for layer in model.layers:
+            if layer.weights:
+                for w in layer.weights:
+                    clean_name = w.name.replace('.', '_').replace('/', '_').replace(':', '_').replace('-', '_')
+                    weights_dict[clean_name] = w.numpy()
+        sio.savemat(save_path, {'onnx_weights': weights_dict})
+        print(f'[MAT Export] Saved MAT model weights -> {save_path}')
+    except Exception as e:
+        print(f'[MAT Export Warning] Failed to export MAT weights: {e}')
+
+
+def save_channel_plots_pdf(H_perf_sample: np.ndarray,
+                            H_in_sample: np.ndarray,
+                            H_pred_sample: np.ndarray,
+                            input_type: str, save_dir: str):
+    """
+    Plot and save vector PDF heatmaps of the real part of the channel grids for Sample 1.
+    Generates:
+      - H_perfect_sample1.pdf
+      - H_{input_type}_sample1.pdf (e.g. H_ls_sample1.pdf or H_li_sample1.pdf)
+      - H_{input_type}_cnn_sample1.pdf (e.g. H_ls_cnn_sample1.pdf or H_li_cnn_sample1.pdf)
+    """
+    try:
+        import matplotlib.pyplot as plt
+        os.makedirs(save_dir, exist_ok=True)
+
+        # 1. Perfect Reference Channel PDF
+        fig, ax = plt.subplots(figsize=(8, 6))
+        im = ax.imshow(H_perf_sample.real, aspect='auto', cmap='viridis')
+        fig.colorbar(im, ax=ax)
+        ax.set_title('Perfect Reference Channel (Real Part) - Sample 1', fontsize=14)
+        ax.set_xlabel('Symbol Index', fontsize=12)
+        ax.set_ylabel('Subcarrier Index', fontsize=12)
+        plt.tight_layout()
+        pdf_perf = os.path.join(save_dir, 'H_perfect_sample1.pdf')
+        plt.savefig(pdf_perf, format='pdf')
+        plt.close(fig)
+
+        # 2. Input Channel PDF (H_ls or H_li)
+        fig, ax = plt.subplots(figsize=(8, 6))
+        im = ax.imshow(H_in_sample.real, aspect='auto', cmap='viridis')
+        fig.colorbar(im, ax=ax)
+        ax.set_title(f'Input Channel H_{input_type} (Real Part) - Sample 1', fontsize=14)
+        ax.set_xlabel('Symbol Index', fontsize=12)
+        ax.set_ylabel('Subcarrier Index', fontsize=12)
+        plt.tight_layout()
+        pdf_in = os.path.join(save_dir, f'H_{input_type}_sample1.pdf')
+        plt.savefig(pdf_in, format='pdf')
+        plt.close(fig)
+
+        # 3. CNN Output Channel PDF (H_ls_cnn or H_li_cnn)
+        fig, ax = plt.subplots(figsize=(8, 6))
+        im = ax.imshow(H_pred_sample.real, aspect='auto', cmap='viridis')
+        fig.colorbar(im, ax=ax)
+        ax.set_title(f'CNN Model Output H_{input_type}_cnn (Real Part) - Sample 1', fontsize=14)
+        ax.set_xlabel('Symbol Index', fontsize=12)
+        ax.set_ylabel('Subcarrier Index', fontsize=12)
+        plt.tight_layout()
+        pdf_pred = os.path.join(save_dir, f'H_{input_type}_cnn_sample1.pdf')
+        plt.savefig(pdf_pred, format='pdf')
+        plt.close(fig)
+
+        print(f'[PDF Export] Channel grid heatmaps saved to: {save_dir}')
+    except Exception as e:
+        print(f'[PDF Export Warning] Failed to export channel heatmaps: {e}')
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Inference: produce corrected complex channel
 # ────────────────────────────────────────────────────────────────────────────
@@ -604,6 +683,7 @@ def main():
             best_epoch    = epoch + 1
             if args.save_model:
                 export_model_to_onnx(model, os.path.join(save_dir, 'best.onnx'))
+                export_model_to_mat(model, os.path.join(save_dir, 'best_net.mat'))
                 # Write detailed training configuration & metadata file alongside the weights
                 with open(os.path.join(save_dir, 'best_epoch.txt'), 'w') as fh:
                     fh.write(f'best_epoch       = {best_epoch}\n'
@@ -624,8 +704,9 @@ def main():
     # ── Save final model ──────────────────────────────────────────────────────
     if args.save_model:
         export_model_to_onnx(model, os.path.join(save_dir, 'final.onnx'))
-        print(f'\n[Save] Final ONNX model -> {os.path.join(save_dir, "final.onnx")}')
-        print(f'[Save] Best  ONNX model -> {os.path.join(save_dir, "best.onnx")}'
+        export_model_to_mat(model, os.path.join(save_dir, 'final_net.mat'))
+        print(f'\n[Save] Final models -> {os.path.join(save_dir, "final.onnx")} & final_net.mat')
+        print(f'[Save] Best  models -> {os.path.join(save_dir, "best.onnx")} & best_net.mat'
               f'  (epoch {best_epoch})')
 
 
@@ -729,6 +810,25 @@ def main():
         'best_epoch':      best_epoch,
     })
     print(f'[Save] Evaluation results -> {eval_path}')
+
+    # ── Export PDF Heatmap Visualizations & Save Complex Grids for Sample 1 ────
+    if len(idx_test) > 0:
+        sample_idx = idx_test[0]
+        sample_mat_path = os.path.join(save_dir, 'channel_grids_sample1.mat')
+        scipy.io.savemat(sample_mat_path, {
+            'H_perfect': H_perfect[sample_idx],
+            f'H_{args.input_type}': H_input[sample_idx],
+            f'H_{args.input_type}_cnn': H_pred_test[0],
+            'snr': args.snr,
+            'input_type': args.input_type
+        })
+        print(f'[Save] Complex channel grids (Sample 1) -> {sample_mat_path}')
+
+        save_channel_plots_pdf(H_perfect[sample_idx],
+                               H_input[sample_idx],
+                               H_pred_test[0],
+                               args.input_type, save_dir)
+
     print(f'\n[Done] Finished in {time.perf_counter() - t_start:.1f} s')
 
 
