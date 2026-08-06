@@ -8,7 +8,7 @@ Usage
 -----
     python train_single_dataset.py --snr 10
     python train_single_dataset.py --snr -5  --input-type prac --epochs 300
-    python train_single_dataset.py --snr 0   --save-model --save-dir ./saved_models
+    python train_single_dataset.py --snr 0   --save-model --save-dir ./trained_models
 
 Arguments
 ---------
@@ -21,7 +21,7 @@ Arguments
     --val-frac    Fraction of data for validation (default: 0.15); remainder = test
     --n-blocks    Number of residual blocks in CNNGenerator (default: 4)
     --save-model  If set, save the trained model weights to disk
-    --save-dir    Directory to save model (default: ./saved_models/SNR_{snr}dB_{type})
+    --save-dir    Directory to save model (default: ./trained_models/SNR_{snr}dB_{type})
     --data-root   Root folder of OpenNTN channel data (auto-detected by default)
     --no-gpu      Disable GPU even if available
 """
@@ -56,7 +56,7 @@ TEST_CODE_N_VAL     = 16           # samples used for validation
 TEST_CODE_N_TEST    = 16           # samples used for test
 TEST_CODE_EPOCHS    = 5            # epochs to run in test-code mode
 DEFAULT_SAVE_MODEL  = False
-DEFAULT_SAVE_DIR    = ''           # auto = ./saved_models/SNR_{snr}dB_{input_type}
+DEFAULT_SAVE_DIR    = ''           # auto = ./trained_models/SNR_{snr}dB_{input_type}
 DEFAULT_DATA_ROOT   = ''           # auto-detected relative to this script
 DEFAULT_N_BLOCKS    = 4
 # ============================================================================
@@ -449,7 +449,7 @@ def main():
                         help='Save trained model weights to disk')
     parser.add_argument('--save-dir', type=str, default=DEFAULT_SAVE_DIR,
                         help='Directory to save model. '
-                             'Default: ./saved_models/SNR_{snr}dB_{input_type}')
+                             'Default: ./trained_models/SNR_{snr}dB_{input_type}')
     parser.add_argument('--data-root', type=str, default=DEFAULT_DATA_ROOT,
                         help='Root folder for OpenNTN channel data '
                              '(default: auto-detect)')
@@ -526,7 +526,7 @@ def main():
     if args.save_dir:
         save_dir = os.path.abspath(args.save_dir)
     else:
-        save_dir = os.path.join(THIS_DIR, 'saved_models',
+        save_dir = os.path.join(THIS_DIR, 'trained_models',
                                 f'SNR_{args.snr}dB_{args.input_type}')
     os.makedirs(save_dir, exist_ok=True)
     print(f'[Save] Model dir : {save_dir}\n')
@@ -734,14 +734,14 @@ def load_trained_model(save_dir: str,
     Parameters
     ----------
     save_dir : path that was printed / saved during training
-               e.g. './single_dataset/saved_models/SNR_10dB_prac'
+               e.g. './single_dataset/trained_models/SNR_10dB_prac'
     n_blocks : must match the value used during training (default: 4)
     use_best : load 'best' weights if True, 'final' weights if False
 
     Example
     -------
     >>> from train_single_dataset import load_trained_model, infer_channel
-    >>> model = load_trained_model('./saved_models/SNR_10dB_prac')
+    >>> model = load_trained_model('./trained_models/SNR_10dB_prac')
     >>> H_pred = infer_channel(model, H_perfect_test, H_input_test,
     ...                        batch_size=16, lower_range=-1)
     """
