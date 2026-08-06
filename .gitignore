@@ -1,6 +1,8 @@
 __pycache__/
 *.h5
 *.mat
+!evaluation_results.mat
+!training_history.mat
 *.sh
 *.out
 *.err
