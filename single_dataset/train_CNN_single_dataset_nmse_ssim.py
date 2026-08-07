@@ -870,6 +870,37 @@ def main():
                                H_pred_test[0],
                                args.input_type, save_dir)
 
+    # Write final_epoch.txt report
+    report_path = os.path.join(save_dir, 'final_epoch.txt')
+    try:
+        with open(report_path, 'w') as fh:
+            fh.write(
+                "============================================================\n"
+                "FINAL EVALUATION METRICS COMPARISON (TEST SET)\n"
+                "============================================================\n"
+                f"SNR: {args.snr} dB | Input Type: {args.input_type} | SSIM Weight: {args.ssim_weight:.3f}\n\n"
+                f"  {'Metric':<14} {'Raw Input':<20} {'CNN Output':<20} {'Improvement?'}\n"
+                f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n"
+                f"  {'MMSE (MSE)':<14} {mmse_in_test:<20.6e} {mmse_test:<20.6e} {'Yes' if mmse_test < mmse_in_test else 'No'}\n"
+                f"  {'NMSE':<14} {nmse_in_test:<20.6f} {nmse_test:<20.6f} {'Yes' if nmse_test < mmse_in_test else 'No'}\n"
+                f"  {'NMSE (dB)':<14} {nmse_in_test_db:<20.2f} {nmse_test_db:<20.2f} {'Yes' if nmse_test_db < mmse_in_test_db else 'No'}\n"
+                f"  {'SSIM':<14} {ssim_in_test:<20.6f} {ssim_test:<20.6f} {'Yes' if ssim_test > ssim_in_test else 'No'}\n"
+                "============================================================\n\n"
+                "============================================================\n"
+                "FINAL EVALUATION METRICS COMPARISON (VALIDATION SET)\n"
+                "============================================================\n"
+                f"  {'Metric':<14} {'Raw Input':<20} {'CNN Output':<20} {'Improvement?'}\n"
+                f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n"
+                f"  {'MMSE (MSE)':<14} {mmse_in_val:<20.6e} {mmse_val:<20.6e} {'Yes' if mmse_val < mmse_in_val else 'No'}\n"
+                f"  {'NMSE':<14} {nmse_in_val:<20.6f} {nmse_val:<20.6f} {'Yes' if nmse_val < mmse_in_val else 'No'}\n"
+                f"  {'NMSE (dB)':<14} {nmse_in_val_db:<20.2f} {nmse_val_db:<20.2f} {'Yes' if nmse_val_db < nmse_in_val_db else 'No'}\n"
+                f"  {'SSIM':<14} {ssim_in_val:<20.6f} {ssim_val:<20.6f} {'Yes' if ssim_val > ssim_in_val else 'No'}\n"
+                "============================================================\n"
+            )
+        print(f'[Save] Final epoch text report -> {report_path}')
+    except Exception as e:
+        print(f'[Save Warning] Failed to write final_epoch.txt report: {e}')
+
     print(f'\n[Done] Finished in {time.perf_counter() - t_start:.1f} s')
 
 

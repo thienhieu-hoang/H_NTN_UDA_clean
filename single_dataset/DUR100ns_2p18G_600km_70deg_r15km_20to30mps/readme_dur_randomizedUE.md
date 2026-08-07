@@ -4,28 +4,28 @@
 - **Carrier Frequency**: 2.18 GHz
 - **Link Direction**: downlink
 - **Satellite (LEO) Height**: 600 km
-- **Configured Target Elevation Angle**: 70.0°
-- **Nominal Beam-Center Elevation Angle**: 69.52° (Snapshot time t = 28.7 s)
+- **Configured Target Elevation Angle**: 70.0ï¿½
+- **Nominal Beam-Center Elevation Angle**: 69.52ï¿½ (Snapshot time t = 28.7 s)
 - **Subcarrier Spacing (SCS)**: 30 kHz
 - **FFT Size**: 256
 - **Active Subcarriers**: 132 (out of 256)
 - **SNR (for LS estimation)**: -5 dB
 - **Total OFDM Symbols**: 14
-- **Pilot Symbols (0-indexed)**: [2, 7, 11]
+- **Pilot Symbols (0-indexed)**: [2, 11]
 - **Total Samples Generated**: 1024
 - **Target Delay Spread Configuration**: 100.0 ns (Custom Overridden)
 - **Average RMS Delay Spread (Realized)**: 139.20 ns (Range: [2.71, 5540.41] ns)
 
 ## Satellite Orbital Pass & Elevation Angle Timeline
-- **Pass Start (t_start = -255.0 s)**: Elevation = 11.42° (Horizon Rise)
-- **Peak Zenith (t_peak = 0.0 s)**: Elevation = 87.86° (Overhead Peak)
-- **Snapshot Point (t_snap = 28.7 s)**: Elevation = 69.52° (Single Position Generated)
-- **Pass End (t_end = 255.0 s)**: Elevation = 10.99° (Horizon Set)
+- **Pass Start (t_start = -255.0 s)**: Elevation = 11.42ï¿½ (Horizon Rise)
+- **Peak Zenith (t_peak = 0.0 s)**: Elevation = 87.86ï¿½ (Overhead Peak)
+- **Snapshot Point (t_snap = 28.7 s)**: Elevation = 69.52ï¿½ (Single Position Generated)
+- **Pass End (t_end = 255.0 s)**: Elevation = 10.99ï¿½ (Horizon Set)
 
 ## Spatial Elevation Variation Across 15km Beam Footprint (1024 UEs)
-- **UE Farthest from Satellite (Min Elevation)**: 68.21°
-- **UE Closest to Satellite (Max Elevation)**: 70.87°
-- **Average Across All UEs (Mean Elevation)**: 69.53°
+- **UE Farthest from Satellite (Min Elevation)**: 68.21ï¿½
+- **UE Closest to Satellite (Max Elevation)**: 70.87ï¿½
+- **Average Across All UEs (Mean Elevation)**: 69.53ï¿½
 
 ## Satellite (LEO) Settings (Fixed Snapshot)
 - **Temporal State**: Single snapshot at orbital time $t = 28.7$ seconds

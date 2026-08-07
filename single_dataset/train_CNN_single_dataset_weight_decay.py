@@ -1,29 +1,16 @@
 """
-Single-Dataset CNN Channel Estimator (OpenNTN)
-===============================================
+Single-Dataset CNN Channel Estimator with Dynamic MSE & SSIM Loss Schedule (OpenNTN)
+=====================================================================================
 Train, evaluate, and test a CNNGenerator on ONE SNR split of the OpenNTN dataset.
 All data (train / val / test) come from the *same* SNR folder.
+This script uses a dynamic scheduling approach for combining MSE and SSIM:
+  - Start with a large SSIM weight to help the model learn coarse layout structures first.
+  - Linearly decay the SSIM weight to a smaller value over the training epochs.
+  - Let the MSE loss dominate in the later epochs to fine-tune the absolute coefficient values.
 
 Usage
 -----
-    python train_single_dataset.py --snr 10
-    python train_single_dataset.py --snr -5  --input-type prac --epochs 300
-    python train_single_dataset.py --snr 0   --save-model --save-dir ./trained_models
-
-Arguments
----------
-    --snr         SNR value in dB  (default: 10).  Supported: -10, -5, 0, 5, 10, 15
-    --input-type  Noisy estimator used as CNN input (default: prac). Choices: prac, li
-    --epochs      Number of training epochs (default: 200)
-    --batch-size  Mini-batch size (default: 16)
-    --lr          Adam learning rate (default: 1e-4)
-    --train-frac  Fraction of data for training (default: 0.70)
-    --val-frac    Fraction of data for validation (default: 0.15); remainder = test
-    --n-blocks    Number of residual blocks in CNNGenerator (default: 4)
-    --save-model  If set, save the trained model weights to disk
-    --save-dir    Directory to save model (default: ./trained_models/SNR_{snr}dB_{type})
-    --data-root   Root folder of OpenNTN channel data (auto-detected by default)
-    --no-gpu      Disable GPU even if available
+    python train_CNN_single_dataset_weight_decay.py --snr 10 --ssim-weight-start 0.5 --ssim-weight-end 0.05
 """
 
 # ── Standard library ────────────────────────────────────────────────────────
@@ -50,13 +37,15 @@ DEFAULT_LR          = 1e-4
 DEFAULT_TRAIN_FRAC  = 0.70
 DEFAULT_VAL_FRAC    = 0.15
 DEFAULT_LOWER_RANGE = -1           # minmax scaling range: -1 -> [-1, 1]
+DEFAULT_SSIM_START  = 0.5          # Initial SSIM weight (MSE weight = 1 - w)
+DEFAULT_SSIM_END    = 0.05         # Final SSIM weight
 # Quick-test mode: tiny subset + few epochs (activated by --test-code)
 TEST_CODE_N_TRAIN   = 48           # samples used for training in test-code mode
 TEST_CODE_N_VAL     = 16           # samples used for validation
 TEST_CODE_N_TEST    = 16           # samples used for test
 TEST_CODE_EPOCHS    = 5            # epochs to run in test-code mode
 DEFAULT_SAVE_MODEL  = False
-DEFAULT_SAVE_DIR    = ''           # auto = ./trained_models/SNR_{snr}dB_{input_type}
+DEFAULT_SAVE_DIR    = ''           # auto = ./trained_models/SNR_{snr}dB_{input_type}_decay
 DEFAULT_DATA_ROOT   = ''           # auto-detected relative to this script
 DEFAULT_N_BLOCKS    = 4
 # ============================================================================
@@ -72,13 +61,9 @@ def _setup_paths():
         this_dir = os.getcwd()
 
     project_root = os.path.abspath(os.path.join(this_dir, '..'))
-    # Insertion order matters: sys.path.insert(0, p) puts each path at the FRONT.
-    # The LAST path inserted ends up at position 0 (= highest priority).
-    # We want JMMD/helper > Domain_Adversarial/helper > project_root,
-    # so insert project_root first, Domain_Adversarial/helper second, JMMD/helper last.
     for p in [project_root,
               os.path.join(project_root, 'Domain_Adversarial', 'helper'),
-              os.path.join(project_root, 'JMMD', 'helper')]:   # ← highest priority
+              os.path.join(project_root, 'JMMD', 'helper')]:
         if p not in sys.path:
             sys.path.insert(0, p)
     return this_dir, project_root
@@ -120,8 +105,6 @@ def find_any_mat_file(base_dir: str) -> str:
 def get_data_path(data_root: str, snr: int, is_test_code: bool = False) -> str:
     """
     Return the absolute path to the .mat file for the requested SNR.
-    If the specified file is missing or changed, dynamically searches 
-    generatedChan/OpenNTN for any available .mat file.
     """
     openntn_root = os.path.join(PROJECT_ROOT, 'generatedChan', 'OpenNTN')
     snr_folder   = SNR_FOLDER_MAP.get(snr, f'{snr}dB')
@@ -150,8 +133,6 @@ def get_data_path(data_root: str, snr: int, is_test_code: bool = False) -> str:
 def load_mat_data(mat_path: str, input_type: str):
     """
     Load a .mat file and return numpy arrays with flexible key fallback.
-
-    MATLAB layout : (14, 132, N_samples) -> Transposed to: (N_samples, 132, 14)
     """
     mat = scipy.io.loadmat(mat_path)
     
@@ -161,7 +142,6 @@ def load_mat_data(mat_path: str, input_type: str):
     elif 'H_perfect_ori' in mat and mat['H_perfect_ori'].size > 0:
         H_perfect = mat['H_perfect_ori'].T
     else:
-        # Fallback: pick first 3D complex array
         for k in mat.keys():
             if not k.startswith('__') and isinstance(mat[k], np.ndarray) and mat[k].ndim == 3:
                 H_perfect = mat[k].T
@@ -171,7 +151,6 @@ def load_mat_data(mat_path: str, input_type: str):
 
     # 2. H_input key resolution
     if input_type in ['ls', 'ls_ori']:
-        # Sparse LS pilot reconstruction into 2D grid
         ls_key = 'H_ls_pilots_ori' if input_type == 'ls_ori' and 'H_ls_pilots_ori' in mat else 'H_ls_pilots'
         if ls_key not in mat:
             for alt in ['H_ls_pilots', 'H_ls_pilots_ori', 'H_LS_comp', 'H_LS_full']:
@@ -183,15 +162,13 @@ def load_mat_data(mat_path: str, input_type: str):
             raise KeyError(f"Unable to reconstruct sparse LS grid. Required keys '{ls_key}', "
                            f"'pilot_rows', 'pilot_cols' not found in {mat_path}")
 
-        H_pilots   = mat[ls_key]                               # Shape [num_pilots, N_samples] or [N_samples, num_pilots]
-        pilot_rows = np.squeeze(mat['pilot_rows']).astype(int) - 1  # 1-indexed -> 0-indexed subcarriers
-        pilot_cols = np.squeeze(mat['pilot_cols']).astype(int) - 1  # 1-indexed -> 0-indexed symbols
+        H_pilots   = mat[ls_key]
+        pilot_rows = np.squeeze(mat['pilot_rows']).astype(int) - 1
+        pilot_cols = np.squeeze(mat['pilot_cols']).astype(int) - 1
 
-        # Ensure H_pilots is shape [N_samples, num_pilots]
         if H_pilots.shape[0] != N_samples and H_pilots.shape[1] == N_samples:
             H_pilots = H_pilots.T
 
-        # Construct sparse 2D channel grid (non-zero at pilots, zero elsewhere)
         H_input = np.zeros((N_samples, n_subc, n_symb), dtype=np.complex64)
         for i in range(N_samples):
             H_input[i, pilot_rows, pilot_cols] = H_pilots[i, :]
@@ -211,8 +188,6 @@ def load_mat_data(mat_path: str, input_type: str):
     H_input   = H_input.astype(np.complex64)
     print(f'  Loaded H_perfect {H_perfect.shape}  |  H_input ({input_key}) {H_input.shape}')
     return H_perfect, H_input
-
-
 
 
 def split_indices(N: int, train_frac: float, val_frac: float, seed: int = 1234):
@@ -245,18 +220,11 @@ def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray,
                      lower_range: int):
     """
     Convert complex batches to scaled real-valued TF tensors.
-
-    Returns
-    -------
-    x_scaled : [B, n_subc, n_symb, 2]  scaled noisy estimate
-    y_scaled : [B, n_subc, n_symb, 2]  scaled perfect reference
-    x_min    : [B, 2]                  per-sample scaling parameters
-    x_max    : [B, 2]
     """
-    x = complx2real(to_structured(H_in_batch))   # [B, 2, n_subc, n_symb]
+    x = complx2real(to_structured(H_in_batch))
     y = complx2real(to_structured(H_perf_batch))
 
-    x = tf.transpose(x, (0, 2, 3, 1))            # [B, n_subc, n_symb, 2]
+    x = tf.transpose(x, (0, 2, 3, 1))
     y = tf.transpose(y, (0, 2, 3, 1))
 
     x_scaled, x_min, x_max = minmaxScaler(x, lower_range=lower_range)
@@ -275,8 +243,8 @@ def compute_mmse(H_pred: np.ndarray, H_true: np.ndarray) -> float:
 
 def compute_nmse(H_pred: np.ndarray, H_true: np.ndarray) -> float:
     """Normalised MSE (averaged over samples)."""
-    num   = np.mean(np.abs(H_pred - H_true) ** 2, axis=(1, 2))  # [N]
-    denom = np.mean(np.abs(H_true) ** 2,           axis=(1, 2))  # [N]
+    num   = np.mean(np.abs(H_pred - H_true) ** 2, axis=(1, 2))
+    denom = np.mean(np.abs(H_true) ** 2,           axis=(1, 2))
     return float(np.mean(num / (denom + 1e-12)))
 
 
@@ -288,27 +256,16 @@ def compute_nmse_db(H_pred: np.ndarray, H_true: np.ndarray) -> float:
 def compute_ssim_batch(H_pred: np.ndarray, H_true: np.ndarray) -> float:
     """
     SSIM computed on the *magnitude* of the complex channel images.
-    Channels are normalised per-sample to [0, 1] before computing SSIM.
-
-    Parameters
-    ----------
-    H_pred, H_true : [N, n_subc, n_symb] complex numpy arrays.
-
-    Returns
-    -------
-    Mean SSIM over the batch.
     """
     mag_pred = np.abs(H_pred).astype(np.float32)
     mag_true = np.abs(H_true).astype(np.float32)
 
-    # per-sample normalise to [0, 1] using H_true statistics
     mn    = mag_true.min(axis=(1, 2), keepdims=True)
     mx    = mag_true.max(axis=(1, 2), keepdims=True)
     scale = np.clip(mx - mn, 1e-8, None)
     mag_pred_n = np.clip((mag_pred - mn) / scale, 0.0, 1.0)
     mag_true_n = (mag_true - mn) / scale
 
-    # TF ssim expects [B, H, W, C]
     pred_t = tf.constant(mag_pred_n[..., np.newaxis])
     true_t = tf.constant(mag_true_n[..., np.newaxis])
     ssim_vals = tf_ssim(true_t, pred_t, max_val=1.0)
@@ -316,42 +273,11 @@ def compute_ssim_batch(H_pred: np.ndarray, H_true: np.ndarray) -> float:
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Training step (compiled for speed)
-# ────────────────────────────────────────────────────────────────────────────
-@tf.function
-def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn):
-    with tf.GradientTape() as tape:
-        residual, _  = model(x_scaled, training=True)
-        x_corrected  = x_scaled + residual                     # residual learning
-        est_loss     = loss_fn(y_scaled, x_corrected)
-        reg_loss     = 0.001 * tf.reduce_mean(tf.square(residual))
-        total_loss   = est_loss + reg_loss
-        if model.losses:
-            total_loss += tf.add_n(model.losses)
-    grads = tape.gradient(total_loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(grads, model.trainable_variables))
-    return total_loss, est_loss
-
-
-# ────────────────────────────────────────────────────────────────────────────
 # ONNX Model Export (Architecture + Weights for MATLAB & Python)
 # ────────────────────────────────────────────────────────────────────────────
 def export_model_to_onnx(model: tf.keras.Model, save_path: str,
                          input_shape=(1, 132, 14, 2)):
-    """
-    Export full Keras model (architecture + learned weight parameters) to ONNX format.
-
-    The resulting .onnx file contains both the model architecture and trained weights.
-    It can be loaded in:
-      - Python: via `onnxruntime` or `onnx`
-      - MATLAB: via `importONNXNetwork('best.onnx', 'OutputLayerType', 'regression')`
-
-    Parameters
-    ----------
-    model       : Built tf.keras.Model / CNNGenerator instance
-    save_path   : Target filepath for the .onnx model (e.g. 'best.onnx')
-    input_shape : Input tensor shape tuple (batch, n_subc, n_symb, 2)
-    """
+    """Export Keras model to ONNX."""
     try:
         import tf2onnx
     except ImportError:
@@ -361,7 +287,6 @@ def export_model_to_onnx(model: tf.keras.Model, save_path: str,
         import tf2onnx
 
     try:
-        # Build concrete tensor spec for conversion
         spec = (tf.TensorSpec(input_shape, tf.float32, name='input_channel'),)
         model_proto, _ = tf2onnx.convert.from_keras(
             model, input_signature=spec, output_path=save_path)
@@ -371,14 +296,7 @@ def export_model_to_onnx(model: tf.keras.Model, save_path: str,
 
 
 def export_model_to_mat(model: tf.keras.Model, save_path: str):
-    """
-    Export trained model weight matrices to .mat format for easy, zero-dependency loading in MATLAB and Python.
-
-    Parameters
-    ----------
-    model     : Trained tf.keras.Model / CNNGenerator instance
-    save_path : Target filepath for the .mat model (e.g. 'best_net.mat')
-    """
+    """Export trained model weights to .mat."""
     try:
         import scipy.io as sio
         weights_dict = {}
@@ -399,16 +317,12 @@ def save_channel_plots_pdf(H_perf_sample: np.ndarray,
                             input_type: str, save_dir: str):
     """
     Plot and save vector PDF heatmaps of the real part of the channel grids for Sample 1.
-    Generates:
-      - H_perfect_sample1.pdf
-      - H_{input_type}_sample1.pdf (e.g. H_ls_sample1.pdf or H_li_sample1.pdf)
-      - H_{input_type}_cnn_sample1.pdf (e.g. H_ls_cnn_sample1.pdf or H_li_cnn_sample1.pdf)
     """
     try:
         import matplotlib.pyplot as plt
         os.makedirs(save_dir, exist_ok=True)
 
-        # 1. Perfect Reference Channel PDF
+        # 1. Perfect Reference
         fig, ax = plt.subplots(figsize=(8, 6))
         im = ax.imshow(H_perf_sample.real, aspect='auto', cmap='viridis')
         fig.colorbar(im, ax=ax)
@@ -420,7 +334,7 @@ def save_channel_plots_pdf(H_perf_sample: np.ndarray,
         plt.savefig(pdf_perf, format='pdf')
         plt.close(fig)
 
-        # 2. Input Channel PDF (H_ls or H_li)
+        # 2. Input Channel
         fig, ax = plt.subplots(figsize=(8, 6))
         im = ax.imshow(H_in_sample.real, aspect='auto', cmap='viridis')
         fig.colorbar(im, ax=ax)
@@ -432,7 +346,7 @@ def save_channel_plots_pdf(H_perf_sample: np.ndarray,
         plt.savefig(pdf_in, format='pdf')
         plt.close(fig)
 
-        # 3. CNN Output Channel PDF (H_ls_cnn or H_li_cnn)
+        # 3. CNN Output
         fig, ax = plt.subplots(figsize=(8, 6))
         im = ax.imshow(H_pred_sample.real, aspect='auto', cmap='viridis')
         fig.colorbar(im, ax=ax)
@@ -451,7 +365,11 @@ def save_channel_plots_pdf(H_perf_sample: np.ndarray,
 
 def save_loss_plot_pdf(history: dict, save_dir: str):
     """
-    Plot and save training and validation/evaluation loss curves as a PDF.
+    Plot and save training and validation/evaluation loss curves as separate PDFs.
+    Generates:
+      - loss_total.pdf (Combined Loss)
+      - loss_mse.pdf (MSE component)
+      - loss_ssim.pdf (SSIM component)
     """
     try:
         import matplotlib.pyplot as plt
@@ -459,23 +377,95 @@ def save_loss_plot_pdf(history: dict, save_dir: str):
 
         epochs = range(1, len(history['train_loss']) + 1)
 
+        # 1. Total Combined Loss Plot
         fig, ax = plt.subplots(figsize=(8, 6))
-        ax.plot(epochs, history['train_loss'], label='Training Loss', color='blue', linewidth=2)
-        ax.plot(epochs, history['val_loss'], label='Validation/Evaluation Loss', color='red', linewidth=2)
-
-        ax.set_title('Training and Validation/Evaluation Loss over Epochs', fontsize=14)
+        ax.plot(epochs, history['train_loss'], label='Training Total Loss', color='blue', linewidth=2)
+        ax.plot(epochs, history['val_loss'], label='Validation Total Loss', color='red', linewidth=2)
+        ax.set_title('Total Combined Loss over Epochs', fontsize=14)
         ax.set_xlabel('Epoch', fontsize=12)
-        ax.set_ylabel('Loss (MSE)', fontsize=12)
+        ax.set_ylabel('Loss', fontsize=12)
         ax.grid(True, linestyle='--', alpha=0.6)
         ax.legend(fontsize=12)
-
         plt.tight_layout()
-        pdf_path = os.path.join(save_dir, 'loss_history.pdf')
+        pdf_path = os.path.join(save_dir, 'loss_total.pdf')
         plt.savefig(pdf_path, format='pdf')
         plt.close(fig)
-        print(f'[PDF Export] Loss history plot saved to: {pdf_path}')
+        print(f'[PDF Export] Total loss plot saved to: {pdf_path}')
+
+        # 2. MSE Component Loss Plot
+        if 'train_mse' in history and 'val_mse' in history:
+            fig, ax = plt.subplots(figsize=(8, 6))
+            ax.plot(epochs, history['train_mse'], label='Training MSE Loss', color='blue', linewidth=2)
+            ax.plot(epochs, history['val_mse'], label='Validation MSE Loss', color='red', linewidth=2)
+            ax.set_title('MSE Loss Component over Epochs', fontsize=14)
+            ax.set_xlabel('Epoch', fontsize=12)
+            ax.set_ylabel('Loss (MSE)', fontsize=12)
+            ax.grid(True, linestyle='--', alpha=0.6)
+            ax.legend(fontsize=12)
+            plt.tight_layout()
+            pdf_path = os.path.join(save_dir, 'loss_mse.pdf')
+            plt.savefig(pdf_path, format='pdf')
+            plt.close(fig)
+            print(f'[PDF Export] MSE loss component plot saved to: {pdf_path}')
+
+        # 3. SSIM Component Loss Plot
+        if 'train_ssim' in history and 'val_ssim' in history:
+            fig, ax = plt.subplots(figsize=(8, 6))
+            ax.plot(epochs, history['train_ssim'], label='Training SSIM Loss (1-SSIM)', color='blue', linewidth=2)
+            ax.plot(epochs, history['val_ssim'], label='Validation SSIM Loss (1-SSIM)', color='red', linewidth=2)
+            ax.set_title('SSIM Loss Component (1 - SSIM) over Epochs', fontsize=14)
+            ax.set_xlabel('Epoch', fontsize=12)
+            ax.set_ylabel('Loss (SSIM)', fontsize=12)
+            ax.grid(True, linestyle='--', alpha=0.6)
+            ax.legend(fontsize=12)
+            plt.tight_layout()
+            pdf_path = os.path.join(save_dir, 'loss_ssim.pdf')
+            plt.savefig(pdf_path, format='pdf')
+            plt.close(fig)
+            print(f'[PDF Export] SSIM loss component plot saved to: {pdf_path}')
+
     except Exception as e:
-        print(f'[PDF Export Warning] Failed to export loss history plot: {e}')
+        print(f'[PDF Export Warning] Failed to export loss history plots: {e}')
+
+
+def compute_combined_loss(y_true, y_pred, loss_fn, lower_range, ssim_weight):
+    """
+    Computes a combined loss of MSE and SSIM:
+      total_loss = (1 - ssim_weight) * MSE + ssim_weight * (1 - SSIM)
+    """
+    # 1. MSE Loss
+    mse_val = loss_fn(y_true, y_pred)
+    
+    # 2. SSIM Loss
+    max_val = tf.cast(2.0 if lower_range == -1 else 1.0, tf.float32)
+    ssim_val = tf.image.ssim(y_true, y_pred, max_val=max_val)
+    ssim_loss = tf.reduce_mean(1.0 - ssim_val)
+    
+    # Combine
+    combined = (1.0 - ssim_weight) * mse_val + ssim_weight * ssim_loss
+    return combined, mse_val, ssim_loss
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Training step (compiled for speed)
+# ────────────────────────────────────────────────────────────────────────────
+@tf.function
+def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim_weight):
+    with tf.GradientTape() as tape:
+        residual, _  = model(x_scaled, training=True)
+        x_corrected  = x_scaled + residual
+        
+        # Compute combined loss components
+        combined_l, mse_l, ssim_l = compute_combined_loss(y_scaled, x_corrected, loss_fn, lower_range, ssim_weight)
+        
+        reg_loss     = 0.001 * tf.reduce_mean(tf.square(residual))
+        total_loss   = combined_l + reg_loss
+        if model.losses:
+            total_loss += tf.add_n(model.losses)
+            
+    grads = tape.gradient(total_loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(grads, model.trainable_variables))
+    return total_loss, mse_l, ssim_l
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -487,19 +477,6 @@ def infer_channel(model: CNNGenerator,
     """
     Run the trained model on a full dataset and return the predicted
     complex channel of shape [N, n_subc, n_symb].
-
-    Parameters
-    ----------
-    model        : trained CNNGenerator
-    H_perf       : [N, n_subc, n_symb] complex - perfect channel (used only for
-                   computing per-sample minmax scaling reference)
-    H_in         : [N, n_subc, n_symb] complex - noisy input channel
-    batch_size   : inference batch size
-    lower_range  : scaling flag used during training (-1 or 0)
-
-    Returns
-    -------
-    H_pred : [N, n_subc, n_symb] complex numpy array
     """
     N     = H_perf.shape[0]
     steps = N // batch_size
@@ -511,7 +488,7 @@ def infer_channel(model: CNNGenerator,
         residual, _ = model(x_sc, training=False)
         x_corr      = x_sc + residual
         x_denorm    = deMinMax(x_corr, x_min, x_max, lower_range=lower_range)
-        x_np        = x_denorm.numpy()          # [B, n_subc, n_symb, 2]
+        x_np        = x_denorm.numpy()
         out.append(x_np[..., 0] + 1j * x_np[..., 1])
 
     # Remainder batch
@@ -524,7 +501,7 @@ def infer_channel(model: CNNGenerator,
         x_np        = x_denorm.numpy()
         out.append(x_np[..., 0] + 1j * x_np[..., 1])
 
-    return np.concatenate(out, axis=0)   # [N, n_subc, n_symb]
+    return np.concatenate(out, axis=0)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -533,7 +510,7 @@ def infer_channel(model: CNNGenerator,
 def main():
     # ── Argument parsing ────────────────────────────────────────────────────
     parser = argparse.ArgumentParser(
-        description='Single-dataset CNN channel estimator for OpenNTN data.',
+        description='Single-dataset CNN channel estimator (MSE + SSIM training loss decay schedule).',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument('--snr', type=int, default=DEFAULT_SNR,
@@ -556,24 +533,25 @@ def main():
                         default=DEFAULT_SAVE_MODEL,
                         help='Save trained model weights to disk')
     parser.add_argument('--save-dir', type=str, default=DEFAULT_SAVE_DIR,
-                        help='Directory to save model. '
-                             'Default: ./trained_models/SNR_{snr}dB_{input_type}')
+                        help='Directory to save model.')
     parser.add_argument('--data-root', type=str, default=DEFAULT_DATA_ROOT,
-                        help='Root folder for OpenNTN channel data '
-                             '(default: auto-detect)')
+                        help='Root folder for OpenNTN channel data')
     parser.add_argument('--no-gpu', action='store_true',
                         help='Disable GPU even if available')
     parser.add_argument('--test-code', action='store_true',
-                        help='Quick smoke-test: use a tiny data subset '
-                             f'({TEST_CODE_N_TRAIN}/{TEST_CODE_N_VAL}/{TEST_CODE_N_TEST} '
-                             f'train/val/test samples) and only '
-                             f'{TEST_CODE_EPOCHS} epochs')
+                        help='Quick smoke-test with small dataset')
+    parser.add_argument('--ssim-weight-start', type=float, default=DEFAULT_SSIM_START,
+                        help='Initial importance weight for SSIM loss at epoch 0.')
+    parser.add_argument('--ssim-weight-end', type=float, default=DEFAULT_SSIM_END,
+                        help='Final importance weight for SSIM loss at the last epoch.')
 
     args = parser.parse_args()
 
     # ── Validate ────────────────────────────────────────────────────────────
     if args.train_frac + args.val_frac >= 1.0:
         parser.error('--train-frac + --val-frac must be < 1.0 (remainder is test).')
+    if not (0.0 <= args.ssim_weight_start <= 1.0) or not (0.0 <= args.ssim_weight_end <= 1.0):
+        parser.error('Both ssim-weight-start and ssim-weight-end must be between 0.0 and 1.0.')
 
     # ── GPU setup ────────────────────────────────────────────────────────────
     if args.no_gpu:
@@ -591,16 +569,18 @@ def main():
     # ── Config banner ────────────────────────────────────────────────────────
     test_frac = 1.0 - args.train_frac - args.val_frac
     print('\n' + '=' * 58)
-    print('  Single-Dataset CNN Channel Estimator  (OpenNTN)')
+    print('  Single-Dataset CNN (Decaying MSE + SSIM Combination Loss)')
     print('=' * 58)
-    print(f'  SNR           : {args.snr:+d} dB')
-    print(f'  Input type    : {args.input_type}')
-    print(f'  Epochs        : {args.epochs}')
-    print(f'  Batch size    : {args.batch_size}')
-    print(f'  Learning rate : {args.lr}')
-    print(f'  Split         : {args.train_frac:.0%} / {args.val_frac:.0%} '
+    print(f'  SNR               : {args.snr:+d} dB')
+    print(f'  Input type        : {args.input_type}')
+    print(f'  Epochs            : {args.epochs}')
+    print(f'  Batch size        : {args.batch_size}')
+    print(f'  Learning rate     : {args.lr}')
+    print(f'  SSIM Weight Start : {args.ssim_weight_start:.3f}')
+    print(f'  SSIM Weight End   : {args.ssim_weight_end:.3f}')
+    print(f'  Split             : {args.train_frac:.0%} / {args.val_frac:.0%} '
           f'/ {test_frac:.0%}  (train / val / test)')
-    print(f'  CNN n_blocks  : {args.n_blocks}')
+    print(f'  CNN n_blocks      : {args.n_blocks}')
     print('=' * 58 + '\n')
 
     # ── Data loading & splitting ─────────────────────────────────────────────
@@ -635,7 +615,7 @@ def main():
         save_dir = os.path.abspath(args.save_dir)
     else:
         save_dir = os.path.join(THIS_DIR, 'trained_models',
-                                f'SNR_{args.snr}dB_{args.input_type}')
+                                f'SNR_{args.snr}dB_{args.input_type}_ssim_decay_s{args.ssim_weight_start}_e{args.ssim_weight_end}')
     os.makedirs(save_dir, exist_ok=True)
     print(f'[Save] Model dir : {save_dir}\n')
 
@@ -648,31 +628,55 @@ def main():
     best_epoch    = 0
     history = {
         'train_loss': [],
+        'train_mse':  [],
+        'train_ssim': [],
         'val_loss':   [],
+        'val_mse':    [],
+        'val_ssim':   [],
         'val_nmse':   [],
+        'ssim_weight_history': [],
     }
 
     print(f'[Train] {args.epochs} epochs  |  {n_train_batches} batches/epoch\n')
     t_start = time.perf_counter()
 
     for epoch in range(args.epochs):
-        # Shuffle training data each epoch with a unique seed
         idx_e = np.random.default_rng(epoch).permutation(idx_train)
+
+        # Calculate dynamic SSIM weight for the current epoch (linear decay schedule)
+        if args.epochs > 1:
+            epoch_ssim_weight = args.ssim_weight_start + (epoch / (args.epochs - 1)) * (args.ssim_weight_end - args.ssim_weight_start)
+        else:
+            epoch_ssim_weight = args.ssim_weight_start
+            
+        history['ssim_weight_history'].append(epoch_ssim_weight)
+        
+        # Convert to TensorFlow constant to avoid retracing warnings
+        ssim_weight_tf = tf.constant(epoch_ssim_weight, dtype=tf.float32)
 
         # ---------- Training pass ----------
         ep_train_loss = 0.0
+        ep_train_mse  = 0.0
+        ep_train_ssim = 0.0
         for b in range(n_train_batches):
             batch_idx = idx_e[b * args.batch_size:(b + 1) * args.batch_size]
             h_p = H_perfect[batch_idx]
             h_i = H_input[batch_idx]
             x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range)
-            total_l, _ = _train_step(model, x_sc, y_sc, optimizer, loss_fn)
+            
+            total_l, mse_l, ssim_l = _train_step(model, x_sc, y_sc, optimizer, loss_fn, lower_range, ssim_weight_tf)
             ep_train_loss += total_l.numpy()
+            ep_train_mse  += mse_l.numpy()
+            ep_train_ssim += ssim_l.numpy()
 
         avg_train_loss = ep_train_loss / max(n_train_batches, 1)
+        avg_train_mse  = ep_train_mse / max(n_train_batches, 1)
+        avg_train_ssim = ep_train_ssim / max(n_train_batches, 1)
 
         # ---------- Validation pass ----------
         ep_val_loss = 0.0
+        ep_val_mse  = 0.0
+        ep_val_ssim = 0.0
         ep_val_nmse = 0.0
         for b in range(n_val_batches):
             batch_idx = idx_val[b * args.batch_size:(b + 1) * args.batch_size]
@@ -681,7 +685,12 @@ def main():
             x_sc, y_sc, x_min, x_max = preprocess_batch(h_p, h_i, lower_range)
             residual, _ = model(x_sc, training=False)
             x_corr      = x_sc + residual
-            ep_val_loss += loss_fn(y_sc, x_corr).numpy()
+            
+            # Use current epoch's SSIM weight for validation loss to match training
+            comb_l, mse_l, ssim_l = compute_combined_loss(y_sc, x_corr, loss_fn, lower_range, ssim_weight_tf)
+            ep_val_loss += comb_l.numpy()
+            ep_val_mse  += mse_l.numpy()
+            ep_val_ssim += ssim_l.numpy()
 
             # Quick NMSE in scaled domain
             x_np = x_corr.numpy()
@@ -691,18 +700,24 @@ def main():
             ep_val_nmse += float(np.mean(diff_sq / (ref_sq + 1e-12)))
 
         avg_val_loss = ep_val_loss / max(n_val_batches, 1)
+        avg_val_mse  = ep_val_mse / max(n_val_batches, 1)
+        avg_val_ssim = ep_val_ssim / max(n_val_batches, 1)
         avg_val_nmse = ep_val_nmse / max(n_val_batches, 1)
 
         history['train_loss'].append(avg_train_loss)
+        history['train_mse'].append(avg_train_mse)
+        history['train_ssim'].append(avg_train_ssim)
         history['val_loss'].append(avg_val_loss)
+        history['val_mse'].append(avg_val_mse)
+        history['val_ssim'].append(avg_val_ssim)
         history['val_nmse'].append(avg_val_nmse)
 
         # ── Print every 10 epochs (and first / last) ──
         if (epoch + 1) % 10 == 0 or epoch == 0 or epoch == args.epochs - 1:
             elapsed = time.perf_counter() - t_start
             print(f'Epoch [{epoch+1:>4d}/{args.epochs}]  '
-                  f'TrainLoss={avg_train_loss:.6f}  '
-                  f'ValLoss={avg_val_loss:.6f}  '
+                  f'TrainLoss={avg_train_loss:.6f} (MSE={avg_train_mse:.6f}, SSIM_W={epoch_ssim_weight:.3f})  '
+                  f'ValLoss={avg_val_loss:.6f} (MSE={avg_val_mse:.6f}, SSIM_loss={avg_val_ssim:.4f})  '
                   f'ValNMSE={avg_val_nmse:.6f}  '
                   f't={elapsed:.1f}s')
 
@@ -713,7 +728,6 @@ def main():
             if args.save_model:
                 export_model_to_onnx(model, os.path.join(save_dir, 'best.onnx'))
                 export_model_to_mat(model, os.path.join(save_dir, 'best_net.mat'))
-                # Write detailed training configuration & metadata file alongside the weights
                 with open(os.path.join(save_dir, 'best_epoch.txt'), 'w') as fh:
                     fh.write(f'best_epoch       = {best_epoch}\n'
                              f'best_val_loss    = {best_val_loss:.8f}\n'
@@ -722,6 +736,10 @@ def main():
                              f'total_epochs     = {args.epochs}\n'
                              f'batch_size       = {args.batch_size}\n'
                              f'learning_rate    = {args.lr}\n'
+                             f'ssim_weight_best = {epoch_ssim_weight:.6f}\n'
+                             f'mse_weight_best  = {1.0 - epoch_ssim_weight:.6f}\n'
+                             f'ssim_weight_start= {args.ssim_weight_start}\n'
+                             f'ssim_weight_end  = {args.ssim_weight_end}\n'
                              f'n_blocks         = {args.n_blocks}\n'
                              f'total_samples    = {N}\n'
                              f'n_train_samples  = {len(idx_train)}\n'
@@ -738,17 +756,23 @@ def main():
         print(f'[Save] Best  models -> {os.path.join(save_dir, "best.onnx")} & best_net.mat'
               f'  (epoch {best_epoch})')
 
-
     # Save training history (.mat)
     hist_path = os.path.join(save_dir, 'training_history.mat')
     scipy.io.savemat(hist_path, {
         'train_loss': np.array(history['train_loss']),
+        'train_mse':  np.array(history['train_mse']),
+        'train_ssim': np.array(history['train_ssim']),
         'val_loss':   np.array(history['val_loss']),
+        'val_mse':    np.array(history['val_mse']),
+        'val_ssim':   np.array(history['val_ssim']),
         'val_nmse':   np.array(history['val_nmse']),
+        'ssim_weight_history': np.array(history['ssim_weight_history']),
         'snr':        args.snr,
         'input_type': args.input_type,
         'n_epochs':   args.epochs,
         'best_epoch': best_epoch,
+        'ssim_weight_start': args.ssim_weight_start,
+        'ssim_weight_end':   args.ssim_weight_end,
     })
     print(f'[Save] Training history -> {hist_path}')
 
@@ -791,9 +815,9 @@ def main():
     nmse_in_test_db = 10.0 * np.log10(nmse_in_test + 1e-12)
 
     # ── Results table ─────────────────────────────────────────────────────────
-    hdr = f'  SNR={args.snr:+d} dB  |  input type: {args.input_type}'
+    hdr = f'  SNR={args.snr:+d} dB  |  input type: {args.input_type}  |  ssim_decay: {args.ssim_weight_start:.3f} -> {args.ssim_weight_end:.3f}'
     print('\n' + '═' * 60)
-    print('  EVALUATION RESULTS')
+    print('  EVALUATION RESULTS (SSIM Weight Decay)')
     print('═' * 60)
     print(hdr)
     print('─' * 60)
@@ -830,7 +854,7 @@ def main():
         'nmse_test_db':    nmse_test_db,
         'ssim_test':       ssim_test,
         'mmse_input_test': mmse_in_test,
-        'nmse_input_test': nmse_in_test,
+        'nmse_input_test': mmse_in_test,
         'nmse_input_test_db': nmse_in_test_db,
         'ssim_input_test': ssim_in_test,
         # --- Meta ---
@@ -840,6 +864,8 @@ def main():
         'n_val':           len(idx_val),
         'n_test':          len(idx_test),
         'best_epoch':      best_epoch,
+        'ssim_weight_start': args.ssim_weight_start,
+        'ssim_weight_end':   args.ssim_weight_end,
     })
     print(f'[Save] Evaluation results -> {eval_path}')
 
@@ -869,11 +895,11 @@ def main():
                 "============================================================\n"
                 "FINAL EVALUATION METRICS COMPARISON (TEST SET)\n"
                 "============================================================\n"
-                f"SNR: {args.snr} dB | Input Type: {args.input_type}\n\n"
+                f"SNR: {args.snr} dB | Input Type: {args.input_type} | SSIM Weight: {args.ssim_weight_start:.3f} -> {args.ssim_weight_end:.3f}\n\n"
                 f"  {'Metric':<14} {'Raw Input':<20} {'CNN Output':<20} {'Improvement?'}\n"
                 f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n"
                 f"  {'MMSE (MSE)':<14} {mmse_in_test:<20.6e} {mmse_test:<20.6e} {'Yes' if mmse_test < mmse_in_test else 'No'}\n"
-                f"  {'NMSE':<14} {nmse_in_test:<20.6f} {nmse_test:<20.6f} {'Yes' if nmse_test < nmse_in_test else 'No'}\n"
+                f"  {'NMSE':<14} {nmse_in_test:<20.6f} {nmse_test:<20.6f} {'Yes' if nmse_test < mmse_in_test else 'No'}\n"
                 f"  {'NMSE (dB)':<14} {nmse_in_test_db:<20.2f} {nmse_test_db:<20.2f} {'Yes' if nmse_test_db < nmse_in_test_db else 'No'}\n"
                 f"  {'SSIM':<14} {ssim_in_test:<20.6f} {ssim_test:<20.6f} {'Yes' if ssim_test > ssim_in_test else 'No'}\n"
                 "============================================================\n\n"
@@ -901,23 +927,7 @@ def main():
 def load_trained_model(save_dir: str,
                        n_blocks: int = DEFAULT_N_BLOCKS,
                        use_best: bool = True) -> CNNGenerator:
-    """
-    Reload a previously trained CNNGenerator from disk.
-
-    Parameters
-    ----------
-    save_dir : path that was printed / saved during training
-               e.g. './single_dataset/trained_models/SNR_10dB_prac'
-    n_blocks : must match the value used during training (default: 4)
-    use_best : load 'best' weights if True, 'final' weights if False
-
-    Example
-    -------
-    >>> from train_single_dataset import load_trained_model, infer_channel
-    >>> model = load_trained_model('./trained_models/SNR_10dB_prac')
-    >>> H_pred = infer_channel(model, H_perfect_test, H_input_test,
-    ...                        batch_size=16, lower_range=-1)
-    """
+    """Reload a previously trained CNNGenerator from disk."""
     filename = 'best.weights.h5' if use_best else 'final.weights.h5'
     ckpt     = os.path.join(save_dir, filename)
     if not os.path.exists(ckpt):
@@ -925,7 +935,6 @@ def load_trained_model(save_dir: str,
         if os.path.exists(fallback) or os.path.exists(fallback + '.index'):
             ckpt = fallback
 
-    # Build the model graph before loading weights
     dummy = tf.zeros((1, 132, 14, 2))
     model(dummy, training=False)
 
