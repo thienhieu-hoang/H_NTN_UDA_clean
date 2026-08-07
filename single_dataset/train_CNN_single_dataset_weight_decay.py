@@ -819,6 +819,23 @@ def main():
     ssim_in_test = compute_ssim_batch(H_input[idx_test], H_perfect[idx_test])
     nmse_in_test_db = 10.0 * np.log10(nmse_in_test + 1e-12)
 
+    # ── Evaluation on TRAINING set ───────────────────────────────────────────
+    print('[Eval] Training set ...')
+    H_pred_train = infer_channel(model,
+                                 H_perfect[idx_train], H_input[idx_train],
+                                 args.batch_size, lower_range)
+
+    mmse_train = compute_mmse(H_pred_train, H_perfect[idx_train])
+    nmse_train = compute_nmse(H_pred_train, H_perfect[idx_train])
+    ssim_train = compute_ssim_batch(H_pred_train, H_perfect[idx_train])
+    nmse_train_db = 10.0 * np.log10(nmse_train + 1e-12)
+
+    # Raw noisy baseline on training
+    mmse_in_train = compute_mmse(H_input[idx_train], H_perfect[idx_train])
+    nmse_in_train = compute_nmse(H_input[idx_train], H_perfect[idx_train])
+    ssim_in_train = compute_ssim_batch(H_input[idx_train], H_perfect[idx_train])
+    nmse_in_train_db = 10.0 * np.log10(nmse_in_train + 1e-12)
+
     # ── Results table ─────────────────────────────────────────────────────────
     hdr = f'  SNR={args.snr:+d} dB  |  input type: {args.input_type}  |  ssim_decay: {args.ssim_weight_start:.3f} -> {args.ssim_weight_end:.3f}'
     print('\n' + '═' * 60)
@@ -827,6 +844,12 @@ def main():
     print(hdr)
     print('─' * 60)
     print(f'  {"Metric":<14} {"Raw "+args.input_type:<20} {"CNN output":<20}')
+    print('─' * 60)
+    print(f'  {"[TRAIN]":<14}')
+    print(f'  {"  MMSE":<14} {mmse_in_train:<20.6e} {mmse_train:<20.6e}')
+    print(f'  {"  NMSE":<14} {nmse_in_train:<20.6f} {nmse_train:<20.6f}')
+    print(f'  {"  NMSE(dB)":<14} {nmse_in_train_db:<20.2f} {nmse_train_db:<20.2f}')
+    print(f'  {"  SSIM":<14} {ssim_in_train:<20.6f} {ssim_train:<20.6f}')
     print('─' * 60)
     print(f'  {"[VAL]":<14}')
     print(f'  {"  MMSE":<14} {mmse_in_val:<20.6e} {mmse_val:<20.6e}')
@@ -844,6 +867,15 @@ def main():
     # ── Save evaluation .mat ──────────────────────────────────────────────────
     eval_path = os.path.join(save_dir, 'evaluation_results.mat')
     scipy.io.savemat(eval_path, {
+        # --- Train ---
+        'mmse_train':      mmse_train,
+        'nmse_train':      nmse_train,
+        'nmse_train_db':   nmse_train_db,
+        'ssim_train':      ssim_train,
+        'mmse_input_train': mmse_in_train,
+        'nmse_input_train': mmse_in_train,
+        'nmse_input_train_db': nmse_in_train_db,
+        'ssim_input_train': ssim_in_train,
         # --- Validation ---
         'mmse_val':        mmse_val,
         'nmse_val':        nmse_val,
@@ -943,8 +975,18 @@ def main():
                 f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n"
                 f"  {'MMSE (MSE)':<14} {mmse_in_val:<20.6e} {mmse_val:<20.6e} {'Yes' if mmse_val < mmse_in_val else 'No'}\n"
                 f"  {'NMSE':<14} {nmse_in_val:<20.6f} {nmse_val:<20.6f} {'Yes' if nmse_val < mmse_in_val else 'No'}\n"
-                f"  {'NMSE (dB)':<14} {nmse_in_val_db:<20.2f} {nmse_val_db:<20.2f} {'Yes' if nmse_val_db < nmse_in_val_db else 'No'}\n"
+                f"  {'NMSE (dB)':<14} {nmse_in_val_db:<20.2f} {nmse_val_db:<20.2f} {'Yes' if nmse_val_db < mmse_in_val_db else 'No'}\n"
                 f"  {'SSIM':<14} {ssim_in_val:<20.6f} {ssim_val:<20.6f} {'Yes' if ssim_val > ssim_in_val else 'No'}\n"
+                "============================================================\n\n"
+                "============================================================\n"
+                "FINAL EVALUATION METRICS COMPARISON (TRAINING SET)\n"
+                "============================================================\n"
+                f"  {'Metric':<14} {'Raw Input':<20} {'CNN Output':<20} {'Improvement?'}\n"
+                f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n"
+                f"  {'MMSE (MSE)':<14} {mmse_in_train:<20.6e} {mmse_train:<20.6e} {'Yes' if mmse_train < mmse_in_train else 'No'}\n"
+                f"  {'NMSE':<14} {nmse_in_train:<20.6f} {nmse_train:<20.6f} {'Yes' if nmse_train < mmse_in_train else 'No'}\n"
+                f"  {'NMSE (dB)':<14} {nmse_in_train_db:<20.2f} {nmse_train_db:<20.2f} {'Yes' if nmse_train_db < nmse_in_train_db else 'No'}\n"
+                f"  {'SSIM':<14} {ssim_in_train:<20.6f} {ssim_train:<20.6f} {'Yes' if ssim_train > ssim_in_train else 'No'}\n"
                 "============================================================\n"
             )
         print(f'[Save] Final epoch text report -> {report_path}')

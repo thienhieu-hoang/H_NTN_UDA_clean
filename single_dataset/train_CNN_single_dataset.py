@@ -708,52 +708,95 @@ def main():
                   f't={elapsed:.1f}s')
 
         # ── Save best model ──
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            best_epoch    = epoch + 1
-            if args.save_model:
-                export_model_to_onnx(model, os.path.join(save_dir, 'best.onnx'))
-                export_model_to_mat(model, os.path.join(save_dir, 'best_net.mat'))
-                # Write detailed training configuration & metadata file alongside the weights
-                with open(os.path.join(save_dir, 'best_epoch.txt'), 'w') as fh:
-                    fh.write(f'best_epoch       = {best_epoch}\n'
-                             f'best_val_loss    = {best_val_loss:.8f}\n'
-                             f'snr              = {args.snr} dB\n'
-                             f'input_type       = {args.input_type}\n'
-                             f'total_epochs     = {args.epochs}\n'
-                             f'batch_size       = {args.batch_size}\n'
-                             f'learning_rate    = {args.lr}\n'
-                             f'n_blocks         = {args.n_blocks}\n'
-                             f'total_samples    = {N}\n'
-                             f'n_train_samples  = {len(idx_train)}\n'
-                             f'n_val_samples    = {len(idx_val)}\n'
-                             f'n_test_samples   = {len(idx_test)}\n'
-                             f'test_code_mode   = {args.test_code}\n'
-                             f'data_path        = {mat_path}\n')
+        if avg_v    # Raw noisy baseline on test
+    mmse_in_test = compute_mmse(H_input[idx_test], H_perfect[idx_test])
+    nmse_in_test = compute_nmse(H_input[idx_test], H_perfect[idx_test])
+    ssim_in_test = compute_ssim_batch(H_input[idx_test], H_perfect[idx_test])
+    nmse_in_test_db = 10.0 * np.log10(nmse_in_test + 1e-12)
 
-    # ── Save final model ──────────────────────────────────────────────────────
-    if args.save_model:
-        export_model_to_onnx(model, os.path.join(save_dir, 'final.onnx'))
-        export_model_to_mat(model, os.path.join(save_dir, 'final_net.mat'))
-        print(f'\n[Save] Final models -> {os.path.join(save_dir, "final.onnx")} & final_net.mat')
-        print(f'[Save] Best  models -> {os.path.join(save_dir, "best.onnx")} & best_net.mat'
-              f'  (epoch {best_epoch})')
+    # ── Evaluation on TRAINING set ───────────────────────────────────────────
+    print('[Eval] Training set ...')
+    H_pred_train = infer_channel(model,
+                                 H_perfect[idx_train], H_input[idx_train],
+                                 args.batch_size, lower_range)
 
+    mmse_train = compute_mmse(H_pred_train, H_perfect[idx_train])
+    nmse_train = compute_nmse(H_pred_train, H_perfect[idx_train])
+    ssim_train = compute_ssim_batch(H_pred_train, H_perfect[idx_train])
+    nmse_train_db = 10.0 * np.log10(nmse_train + 1e-12)
 
-    # Save training history (.mat)
-    hist_path = os.path.join(save_dir, 'training_history.mat')
-    scipy.io.savemat(hist_path, {
-        'train_loss': np.array(history['train_loss']),
-        'val_loss':   np.array(history['val_loss']),
-        'val_nmse':   np.array(history['val_nmse']),
-        'snr':        args.snr,
-        'input_type': args.input_type,
-        'n_epochs':   args.epochs,
-        'best_epoch': best_epoch,
-    })
-    print(f'[Save] Training history -> {hist_path}')
+    # Raw noisy baseline on training
+    mmse_in_train = compute_mmse(H_input[idx_train], H_perfect[idx_train])
+    nmse_in_train = compute_nmse(H_input[idx_train], H_perfect[idx_train])
+    ssim_in_train = compute_ssim_batch(H_input[idx_train], H_perfect[idx_train])
+    nmse_in_train_db = 10.0 * np.log10(nmse_in_train + 1e-12)
 
-    # Save training loss curves plot PDF
+    # ── Results table ─────────────────────────────────────────────────────────
+    hdr = f'  SNR={args.snr:+d} dB  |  input type: {args.input_type}'
+    print('\n' + '═' * 60)
+    print('  EVALUATION RESULTS')
+    print('═' * 60)
+    print(hdr)
+    print('─' * 60)
+    print(f'  {"Metric":<14} {"Raw "+args.input_type:<20} {"CNN output":<20}')
+    print('─' * 60)
+    print(f'  {"[TRAIN]":<14}')
+    print(f'  {"  MMSE":<14} {mmse_in_train:<20.6e} {mmse_train:<20.6e}')
+    print(f'  {"  NMSE":<14} {nmse_in_train:<20.6f} {nmse_train:<20.6f}')
+    print(f'  {"  NMSE(dB)":<14} {nmse_in_train_db:<20.2f} {nmse_train_db:<20.2f}')
+    print(f'  {"  SSIM":<14} {ssim_in_train:<20.6f} {ssim_train:<20.6f}')
+    print('─' * 60)
+    print(f'  {"[VAL]":<14}')
+    print(f'  {"  MMSE":<14} {mmse_in_val:<20.6e} {mmse_val:<20.6e}')
+    print(f'  {"  NMSE":<14} {nmse_in_val:<20.6f} {nmse_val:<20.6f}')
+    print(f'  {"  NMSE(dB)":<14} {nmse_in_val_db:<20.2f} {nmse_val_db:<20.2f}')
+    print(f'  {"  SSIM":<14} {ssim_in_val:<20.6f} {ssim_val:<20.6f}')
+    print('─' * 60)
+    print(f'  {"[TEST]":<14}')
+    print(f'  {"  MMSE":<14} {mmse_in_test:<20.6e} {mmse_test:<20.6e}')
+    print(f'  {"  NMSE":<14} {nmse_in_test:<20.6f} {nmse_test:<20.6f}')
+    print(f'  {"  NMSE(dB)":<14} {nmse_in_test_db:<20.2f} {nmse_test_db:<20.2f}')
+    print(f'  {"  SSIM":<14} {ssim_in_test:<20.6f} {ssim_test:<20.6f}')
+    print('═' * 60)
+
+    # ── Save evaluation .mat ──────────────────────────────────────────────────
+    eval_path = os.path.join(save_dir, 'evaluation_results.mat')
+    scipy.io.savemat(eval_path, {
+        # --- Train ---
+        'mmse_train':      mmse_train,
+        'nmse_train':      nmse_train,
+        'nmse_train_db':   nmse_train_db,
+        'ssim_train':      ssim_train,
+        'mmse_input_train': mmse_in_train,
+        'nmse_input_train': nmse_in_train,
+        'nmse_input_train_db': nmse_in_train_db,
+        'ssim_input_train': ssim_in_train,
+        # --- Validation ---
+        'mmse_val':        mmse_val,
+        'nmse_val':        nmse_val,
+        'nmse_val_db':     nmse_val_db,
+        'ssim_val':        ssim_val,
+        'mmse_input_val':  mmse_in_val,
+        'nmse_input_val':  nmse_in_val,
+        'nmse_input_val_db': nmse_in_val_db,
+        'ssim_input_val':  ssim_in_val,
+        # --- Test ---
+        'mmse_test':       mmse_test,
+        'nmse_test':       nmse_test,
+        'nmse_test_db':    nmse_test_db,
+        'ssim_test':       ssim_test,
+        'mmse_input_test': mmse_in_test,
+        'nmse_input_test': mmse_in_test,
+        'nmse_input_test_db': nmse_in_test_db,
+        'ssim_input_test': ssim_in_test,
+        # --- Meta ---
+        'snr':             args.snr,
+        'input_type':      args.input_type,
+        'n_train':         len(idx_train),
+        'n_val':           len(idx_val),
+        'n_test':          len(idx_test),
+        'best_epoch':      best_epoch,
+    })ning loss curves plot PDF
     save_loss_plot_pdf(history, save_dir)
 
     # ── Evaluation on VALIDATION set ─────────────────────────────────────────
@@ -791,58 +834,46 @@ def main():
     ssim_in_test = compute_ssim_batch(H_input[idx_test], H_perfect[idx_test])
     nmse_in_test_db = 10.0 * np.log10(nmse_in_test + 1e-12)
 
-    # ── Results table ─────────────────────────────────────────────────────────
-    hdr = f'  SNR={args.snr:+d} dB  |  input type: {args.input_type}'
-    print('\n' + '═' * 60)
-    print('  EVALUATION RESULTS')
-    print('═' * 60)
-    print(hdr)
-    print('─' * 60)
-    print(f'  {"Metric":<14} {"Raw "+args.input_type:<20} {"CNN output":<20}')
-    print('─' * 60)
-    print(f'  {"[VAL]":<14}')
-    print(f'  {"  MMSE":<14} {mmse_in_val:<20.6e} {mmse_val:<20.6e}')
-    print(f'  {"  NMSE":<14} {nmse_in_val:<20.6f} {nmse_val:<20.6f}')
-    print(f'  {"  NMSE(dB)":<14} {nmse_in_val_db:<20.2f} {nmse_val_db:<20.2f}')
-    print(f'  {"  SSIM":<14} {ssim_in_val:<20.6f} {ssim_val:<20.6f}')
-    print('─' * 60)
-    print(f'  {"[TEST]":<14}')
-    print(f'  {"  MMSE":<14} {mmse_in_test:<20.6e} {mmse_test:<20.6e}')
-    print(f'  {"  NMSE":<14} {nmse_in_test:<20.6f} {nmse_test:<20.6f}')
-    print(f'  {"  NMSE(dB)":<14} {nmse_in_test_db:<20.2f} {nmse_test_db:<20.2f}')
-    print(f'  {"  SSIM":<14} {ssim_in_test:<20.6f} {ssim_test:<20.6f}')
-    print('═' * 60)
-
-    # ── Save evaluation .mat ──────────────────────────────────────────────────
-    eval_path = os.path.join(save_dir, 'evaluation_results.mat')
-    scipy.io.savemat(eval_path, {
-        # --- Validation ---
-        'mmse_val':        mmse_val,
-        'nmse_val':        nmse_val,
-        'nmse_val_db':     nmse_val_db,
-        'ssim_val':        ssim_val,
-        'mmse_input_val':  mmse_in_val,
-        'nmse_input_val':  nmse_in_val,
-        'nmse_input_val_db': nmse_in_val_db,
-        'ssim_input_val':  ssim_in_val,
-        # --- Test ---
-        'mmse_test':       mmse_test,
-        'nmse_test':       nmse_test,
-        'nmse_test_db':    nmse_test_db,
-        'ssim_test':       ssim_test,
-        'mmse_input_test': mmse_in_test,
-        'nmse_input_test': nmse_in_test,
-        'nmse_input_test_db': nmse_in_test_db,
-        'ssim_input_test': ssim_in_test,
-        # --- Meta ---
-        'snr':             args.snr,
-        'input_type':      args.input_type,
-        'n_train':         len(idx_train),
-        'n_val':           len(idx_val),
-        'n_test':          len(idx_test),
-        'best_epoch':      best_epoch,
-    })
-    print(f'[Save] Evaluation results -> {eval_path}')
+    # ── Results table ──────────────────────────�    # Write final_epoch.txt report
+    report_path = os.path.join(save_dir, 'final_epoch.txt')
+    try:
+        with open(report_path, 'w') as fh:
+            fh.write(
+                "============================================================\n"
+                "FINAL EVALUATION METRICS COMPARISON (TEST SET)\n"
+                "============================================================\n"
+                f"SNR: {args.snr} dB | Input Type: {args.input_type}\n\n"
+                f"  {'Metric':<14} {'Raw Input':<20} {'CNN Output':<20} {'Improvement?'}\n"
+                f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n"
+                f"  {'MMSE (MSE)':<14} {mmse_in_test:<20.6e} {mmse_test:<20.6e} {'Yes' if mmse_test < mmse_in_test else 'No'}\n"
+                f"  {'NMSE':<14} {nmse_in_test:<20.6f} {nmse_test:<20.6f} {'Yes' if nmse_test < mmse_in_test else 'No'}\n"
+                f"  {'NMSE (dB)':<14} {nmse_in_test_db:<20.2f} {nmse_test_db:<20.2f} {'Yes' if nmse_test_db < nmse_in_test_db else 'No'}\n"
+                f"  {'SSIM':<14} {ssim_in_test:<20.6f} {ssim_test:<20.6f} {'Yes' if ssim_test > ssim_in_test else 'No'}\n"
+                "============================================================\n\n"
+                "============================================================\n"
+                "FINAL EVALUATION METRICS COMPARISON (VALIDATION SET)\n"
+                "============================================================\n"
+                f"  {'Metric':<14} {'Raw Input':<20} {'CNN Output':<20} {'Improvement?'}\n"
+                f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n"
+                f"  {'MMSE (MSE)':<14} {mmse_in_val:<20.6e} {mmse_val:<20.6e} {'Yes' if mmse_val < mmse_in_val else 'No'}\n"
+                f"  {'NMSE':<14} {nmse_in_val:<20.6f} {nmse_val:<20.6f} {'Yes' if nmse_val < mmse_in_val else 'No'}\n"
+                f"  {'NMSE (dB)':<14} {nmse_in_val_db:<20.2f} {nmse_val_db:<20.2f} {'Yes' if nmse_val_db < nmse_in_val_db else 'No'}\n"
+                f"  {'SSIM':<14} {ssim_in_val:<20.6f} {ssim_val:<20.6f} {'Yes' if ssim_val > ssim_in_val else 'No'}\n"
+                "============================================================\n\n"
+                "============================================================\n"
+                "FINAL EVALUATION METRICS COMPARISON (TRAINING SET)\n"
+                "============================================================\n"
+                f"  {'Metric':<14} {'Raw Input':<20} {'CNN Output':<20} {'Improvement?'}\n"
+                f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n"
+                f"  {'MMSE (MSE)':<14} {mmse_in_train:<20.6e} {mmse_train:<20.6e} {'Yes' if mmse_train < mmse_in_train else 'No'}\n"
+                f"  {'NMSE':<14} {nmse_in_train:<20.6f} {nmse_train:<20.6f} {'Yes' if nmse_train < mmse_in_train else 'No'}\n"
+                f"  {'NMSE (dB)':<14} {nmse_in_train_db:<20.2f} {nmse_train_db:<20.2f} {'Yes' if nmse_train_db < nmse_in_train_db else 'No'}\n"
+                f"  {'SSIM':<14} {ssim_in_train:<20.6f} {ssim_train:<20.6f} {'Yes' if ssim_train > ssim_in_train else 'No'}\n"
+                "============================================================\n"
+            )
+        print(f'[Save] Final epoch text report -> {report_path}')
+    except Exception as e:
+        print(f'[Save Warning] Failed to write final_epoch.txt report: {e}') {eval_path}')
 
     # ── Export PDF Heatmap Visualizations & Save Complex Grids for Test and Train Sample 1 ────
     if len(idx_test) > 0:
