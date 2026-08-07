@@ -315,53 +315,58 @@ def export_model_to_mat(model: tf.keras.Model, save_path: str):
 def save_channel_plots_pdf(H_perf_sample: np.ndarray,
                             H_in_sample: np.ndarray,
                             H_pred_sample: np.ndarray,
-                            input_type: str, save_dir: str):
+                            input_type: str, save_dir: str,
+                            prefix: str = 'test'):
     """
     Plot and save vector PDF heatmaps of the real part of the channel grids for Sample 1.
+    Generates:
+      - H_perfect_{prefix}_sample1.pdf
+      - H_{input_type}_{prefix}_sample1.pdf
+      - H_{input_type}_cnn_{prefix}_sample1.pdf
     """
     try:
         import matplotlib.pyplot as plt
         os.makedirs(save_dir, exist_ok=True)
 
-        # 1. Perfect Reference
+        # 1. Perfect Reference Channel PDF
         fig, ax = plt.subplots(figsize=(8, 6))
         im = ax.imshow(H_perf_sample.real, aspect='auto', cmap='viridis')
         fig.colorbar(im, ax=ax)
-        ax.set_title('Perfect Reference Channel (Real Part) - Sample 1', fontsize=14)
+        ax.set_title(f'Perfect Reference Channel (Real Part) - {prefix.capitalize()} Sample 1', fontsize=14)
         ax.set_xlabel('Symbol Index', fontsize=12)
         ax.set_ylabel('Subcarrier Index', fontsize=12)
         plt.tight_layout()
-        pdf_perf = os.path.join(save_dir, 'H_perfect_sample1.pdf')
+        pdf_perf = os.path.join(save_dir, f'H_perfect_{prefix}_sample1.pdf')
         plt.savefig(pdf_perf, format='pdf')
         plt.close(fig)
 
-        # 2. Input Channel
+        # 2. Input Channel PDF (H_ls or H_li)
         fig, ax = plt.subplots(figsize=(8, 6))
         im = ax.imshow(H_in_sample.real, aspect='auto', cmap='viridis')
         fig.colorbar(im, ax=ax)
-        ax.set_title(f'Input Channel H_{input_type} (Real Part) - Sample 1', fontsize=14)
+        ax.set_title(f'Input Channel H_{input_type} (Real Part) - {prefix.capitalize()} Sample 1', fontsize=14)
         ax.set_xlabel('Symbol Index', fontsize=12)
         ax.set_ylabel('Subcarrier Index', fontsize=12)
         plt.tight_layout()
-        pdf_in = os.path.join(save_dir, f'H_{input_type}_sample1.pdf')
+        pdf_in = os.path.join(save_dir, f'H_{input_type}_{prefix}_sample1.pdf')
         plt.savefig(pdf_in, format='pdf')
         plt.close(fig)
 
-        # 3. CNN Output
+        # 3. CNN Output Channel PDF (H_ls_cnn or H_li_cnn)
         fig, ax = plt.subplots(figsize=(8, 6))
         im = ax.imshow(H_pred_sample.real, aspect='auto', cmap='viridis')
         fig.colorbar(im, ax=ax)
-        ax.set_title(f'CNN Model Output H_{input_type}_cnn (Real Part) - Sample 1', fontsize=14)
+        ax.set_title(f'CNN Model Output H_{input_type}_cnn (Real Part) - {prefix.capitalize()} Sample 1', fontsize=14)
         ax.set_xlabel('Symbol Index', fontsize=12)
         ax.set_ylabel('Subcarrier Index', fontsize=12)
         plt.tight_layout()
-        pdf_pred = os.path.join(save_dir, f'H_{input_type}_cnn_sample1.pdf')
+        pdf_pred = os.path.join(save_dir, f'H_{input_type}_cnn_{prefix}_sample1.pdf')
         plt.savefig(pdf_pred, format='pdf')
         plt.close(fig)
 
-        print(f'[PDF Export] Channel grid heatmaps saved to: {save_dir}')
+        print(f'[PDF Export] {prefix.capitalize()} channel grid heatmaps saved to: {save_dir}')
     except Exception as e:
-        print(f'[PDF Export Warning] Failed to export channel heatmaps: {e}')
+        print(f'[PDF Export Warning] Failed to export {prefix} channel heatmaps: {e}')
 
 
 def save_loss_plot_pdf(history: dict, save_dir: str):
@@ -852,10 +857,10 @@ def main():
     })
     print(f'[Save] Evaluation results -> {eval_path}')
 
-    # ── Export PDF Heatmap Visualizations & Save Complex Grids for Sample 1 ────
+    # ── Export PDF Heatmap Visualizations & Save Complex Grids for Test and Train Sample 1 ────
     if len(idx_test) > 0:
         sample_idx = idx_test[0]
-        sample_mat_path = os.path.join(save_dir, 'channel_grids_sample1.mat')
+        sample_mat_path = os.path.join(save_dir, 'channel_grids_test_sample1.mat')
         scipy.io.savemat(sample_mat_path, {
             'H_perfect': H_perfect[sample_idx],
             f'H_{args.input_type}': H_input[sample_idx],
@@ -863,12 +868,40 @@ def main():
             'snr': args.snr,
             'input_type': args.input_type
         })
-        print(f'[Save] Complex channel grids (Sample 1) -> {sample_mat_path}')
+        print(f'[Save] Complex channel grids (Test Sample 1) -> {sample_mat_path}')
 
         save_channel_plots_pdf(H_perfect[sample_idx],
                                H_input[sample_idx],
                                H_pred_test[0],
-                               args.input_type, save_dir)
+                               args.input_type, save_dir,
+                               prefix='test')
+
+    if len(idx_train) > 0:
+        train_sample_idx = idx_train[0]
+        # Run inference on the first training sample
+        H_pred_train_sample = infer_channel(
+            model,
+            H_perfect[train_sample_idx:train_sample_idx+1],
+            H_input[train_sample_idx:train_sample_idx+1],
+            batch_size=1,
+            lower_range=lower_range
+        )[0]
+
+        train_sample_mat_path = os.path.join(save_dir, 'channel_grids_train_sample1.mat')
+        scipy.io.savemat(train_sample_mat_path, {
+            'H_perfect': H_perfect[train_sample_idx],
+            f'H_{args.input_type}': H_input[train_sample_idx],
+            f'H_{args.input_type}_cnn': H_pred_train_sample,
+            'snr': args.snr,
+            'input_type': args.input_type
+        })
+        print(f'[Save] Complex channel grids (Train Sample 1) -> {train_sample_mat_path}')
+
+        save_channel_plots_pdf(H_perfect[train_sample_idx],
+                               H_input[train_sample_idx],
+                               H_pred_train_sample,
+                               args.input_type, save_dir,
+                               prefix='train')
 
     # Write final_epoch.txt report
     report_path = os.path.join(save_dir, 'final_epoch.txt')
