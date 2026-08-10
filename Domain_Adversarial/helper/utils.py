@@ -101,7 +101,7 @@ def minmaxScaler(x, min_pre=None, max_pre=None, lower_range = -1, linear_interp=
         x_min = tf.reduce_min(x_reshaped, axis=1)  # [N, 2]
         x_max = tf.reduce_max(x_reshaped, axis=1)  # [N, 2]
     
-    scale = tf.clip_by_value(x_max - x_min, 1e-8, tf.float32.max)  # avoid divide-by-zero # [N, 2]
+    scale = tf.clip_by_value(x_max - x_min, 1e-30, tf.float32.max)  # avoid divide-by-zero # [N, 2]
 
     # Reshape for broadcasting
     x_min_broadcast = tf.reshape(x_min, [N, 1, 1, 2])
