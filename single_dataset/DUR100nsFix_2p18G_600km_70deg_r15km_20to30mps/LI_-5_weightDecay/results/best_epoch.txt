@@ -1,12 +1,12 @@
-best_epoch       = 199
-best_val_loss    = 0.00242653
+best_epoch       = 200
+best_val_loss    = 0.00205688
 snr              = -5 dB
 input_type       = li
 total_epochs     = 200
 batch_size       = 16
 learning_rate    = 0.0001
-ssim_weight_best = 0.054523
-mse_weight_best  = 0.945477
+ssim_weight_best = 0.050000
+mse_weight_best  = 0.950000
 ssim_weight_start= 0.95
 ssim_weight_end  = 0.05
 n_blocks         = 4
