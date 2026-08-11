@@ -48,6 +48,7 @@ DEFAULT_SAVE_MODEL  = False
 DEFAULT_SAVE_DIR    = ''           # auto = ./trained_models/SNR_{snr}dB_{input_type}_decay
 DEFAULT_DATA_ROOT   = ''           # auto-detected relative to this script
 DEFAULT_N_BLOCKS    = 4
+DEFAULT_CLIP_EXTRAP = False
 # ============================================================================
 
 
@@ -569,6 +570,7 @@ def main():
     parser.add_argument('--test-code', action='store_true',
                         help='Quick smoke-test with small dataset')
     parser.add_argument('--clip-extrap', action='store_true',
+                        default=DEFAULT_CLIP_EXTRAP,
                         help='Clip extrapolation values of the input grid to the pilot region bounds')
     parser.add_argument('--ssim-weight-start', type=float, default=DEFAULT_SSIM_START,
                         help='Initial importance weight for SSIM loss at epoch 0.')
@@ -611,6 +613,7 @@ def main():
     print(f'  Split             : {args.train_frac:.0%} / {args.val_frac:.0%} '
           f'/ {test_frac:.0%}  (train / val / test)')
     print(f'  CNN n_blocks      : {args.n_blocks}')
+    print(f'  Clip extrapolation: {args.clip_extrap}')
     print('=' * 58 + '\n')
 
     # ── Data loading & splitting ─────────────────────────────────────────────
