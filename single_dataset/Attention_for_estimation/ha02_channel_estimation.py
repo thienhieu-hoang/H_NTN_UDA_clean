@@ -4,12 +4,12 @@ HA02 Channel Estimation Model Architecture (TensorFlow / Keras)
 Converted from PyTorch to TensorFlow 2.x.
 
 Architecture Summary:
-- Input:  (Batch, 72, 2)       --> Sparse LS estimates at pilot locations (Real & Imag)
-- Output: (Batch, 14, 72, 2)   --> Reconstructed 2D channel grid (14 symbols x 72 subcarriers x 2)
+- Input:  (Batch, 88, 2)       --> Sparse LS estimates at pilot locations (Real & Imag)
+- Output: (Batch, 14, 132, 2)   --> Reconstructed 2D channel grid (14 symbols x 132 subcarriers x 2)
 
 Sub-modules:
 1. TransformerEncoderBlock: Multi-Head Self-Attention on pilot features + Feed-Forward Network.
-2. ResidualConvDecoderBlock: Conv2D -> Residual Block (Conv-ReLU-Conv+BatchNorm) -> Linear Upsampler (72 -> 1008) -> Conv2D.
+2. ResidualConvDecoderBlock: Conv2D -> Residual Block (Conv-ReLU-Conv+BatchNorm) -> Linear Upsampler (88 -> 1848) -> Conv2D.
 """
 
 import os
@@ -30,16 +30,16 @@ class TransformerEncoderBlock(layers.Layer):
     - Feed-Forward Network (FC -> GeLU -> FC).
     - Add & Layer Normalization.
     """
-    def __init__(self, num_pilot_elems=72, num_channels=2, num_heads=2, **kwargs):
+    def __init__(self, num_pilot_elems=88, num_channels=2, num_heads=2, **kwargs):
         super(TransformerEncoderBlock, self).__init__(**kwargs)
-        self.num_pilot_elems = num_pilot_elems  # 72
+        self.num_pilot_elems = num_pilot_elems  # 88
         self.num_channels = num_channels        # 2 (Real, Imag)
         self.num_heads = num_heads              # 2 heads
         
-        self.in_dim = num_pilot_elems * num_channels  # 72 * 2 = 144
-        self.head_dim = self.in_dim // num_heads      # 144 / 2 = 72
+        self.in_dim = num_pilot_elems * num_channels  # 88 * 2 = 176
+        self.head_dim = self.in_dim // num_heads      # 176 / 2 = 88
         
-        # FC1: resizes input from (144) to 3 * 144 = 432 for Q, K, V projection
+        # FC1: resizes input from (176) to 3 * 176 = 528 for Q, K, V projection
         self.fc1 = layers.Dense(3 * self.in_dim, name="qkv_projection")
         
         # FC2: projects concatenated multi-head attention back to in_dim
@@ -55,34 +55,34 @@ class TransformerEncoderBlock(layers.Layer):
 
     def call(self, inputs):
         """
-        Input shape: (batch_size, num_pilot_elems, num_channels) e.g., (B, 72, 2)
+        Input shape: (batch_size, num_pilot_elems, num_channels) e.g., (B, 88, 2)
         """
         B = tf.shape(inputs)[0]
-        x_flat = tf.reshape(inputs, [B, self.in_dim])  # (B, 144)
+        x_flat = tf.reshape(inputs, [B, self.in_dim])  # (B, 176)
         
         # 1. Linear projection to generate Q, K, V
-        qkv = self.fc1(x_flat)  # (B, 432)
-        qkv = tf.reshape(qkv, [B, 3, self.num_heads, self.head_dim])  # (B, 3, 2, 72)
-        Q = qkv[:, 0, :, :]  # (B, 2, 72)
-        K = qkv[:, 1, :, :]  # (B, 2, 72)
-        V = qkv[:, 2, :, :]  # (B, 2, 72)
+        qkv = self.fc1(x_flat)  # (B, 528)
+        qkv = tf.reshape(qkv, [B, 3, self.num_heads, self.head_dim])  # (B, 3, 2, 88)
+        Q = qkv[:, 0, :, :]  # (B, 2, 88)
+        K = qkv[:, 1, :, :]  # (B, 2, 88)
+        V = qkv[:, 2, :, :]  # (B, 2, 88)
         
         # 2. Scaled Dot-Product Attention per head
-        # Scale factor: sqrt(num_pilot_elems / num_heads) = sqrt(72 / 2) = sqrt(36) = 6.0
+        # Scale factor: sqrt(num_pilot_elems / num_heads) = sqrt(88 / 2) = sqrt(44) ≈ 6.633
         scale = tf.cast(tf.sqrt(self.num_pilot_elems / self.num_heads), dtype=tf.float32)
         
-        Q_exp = tf.expand_dims(Q, axis=-1)  # (B, 2, 72, 1)
-        K_exp = tf.expand_dims(K, axis=-2)  # (B, 2, 1, 72)
+        Q_exp = tf.expand_dims(Q, axis=-1)  # (B, 2, 88, 1)
+        K_exp = tf.expand_dims(K, axis=-2)  # (B, 2, 1, 88)
         
-        scores = tf.matmul(Q_exp, K_exp) / scale  # (B, 2, 72, 72)
+        scores = tf.matmul(Q_exp, K_exp) / scale  # (B, 2, 88, 88)
         attn_weights = tf.nn.softmax(scores, axis=-1)
         
-        V_exp = tf.expand_dims(V, axis=-1)  # (B, 2, 72, 1)
-        attn_out = tf.squeeze(tf.matmul(attn_weights, V_exp), axis=-1)  # (B, 2, 72)
+        V_exp = tf.expand_dims(V, axis=-1)  # (B, 2, 88, 1)
+        attn_out = tf.squeeze(tf.matmul(attn_weights, V_exp), axis=-1)  # (B, 2, 88)
         
         # 3. Concatenate heads & project
-        attn_out_flat = tf.reshape(attn_out, [B, self.in_dim])  # (B, 144)
-        attn_proj = self.fc2(attn_out_flat)                    # (B, 144)
+        attn_out_flat = tf.reshape(attn_out, [B, self.in_dim])  # (B, 176)
+        attn_proj = self.fc2(attn_out_flat)                    # (B, 176)
         
         # 4. Residual + Add & Norm 1
         x_norm1 = self.ln1(x_flat + attn_proj)
@@ -90,9 +90,9 @@ class TransformerEncoderBlock(layers.Layer):
         # 5. Feed-Forward Network + Add & Norm 2
         ffn1 = tf.nn.gelu(self.ffn_dense1(x_norm1))
         ffn_out = self.ffn_dense2(ffn1)
-        out = self.ln2(x_norm1 + ffn_out)  # (B, 144)
+        out = self.ln2(x_norm1 + ffn_out)  # (B, 176)
         
-        # Reshape back to (B, 72, 2)
+        # Reshape back to (B, 88, 2)
         return tf.reshape(out, [B, self.num_pilot_elems, self.num_channels])
 
 
@@ -105,17 +105,18 @@ class ResidualConvDecoderBlock(layers.Layer):
     Residual Convolutional Architecture for HA02 (Section IV-B in the paper).
     - Conv2D (2x2 kernel, N_filter=2 channels)
     - Residual Module (Conv2D -> ReLU -> Conv2D + BatchNorm)
-    - Upsampling Module (Dense layer projecting 72 pilot dimension -> 1008 full grid dimension)
+    - Upsampling Module (Dense layer projecting 88 pilot dimension -> 1848 full grid dimension)
     - Conv2D output layer (maps 2 filters back to 1 channel)
-    - Reshape to 2D channel grid (14 symbols x 72 subcarriers x 2)
+    - Reshape to 2D channel grid (14 symbols x 132 subcarriers x 2)
     """
-    def __init__(self, num_pilot_elems=72, total_grid_elems=1008, n_filter=2, **kwargs):
+    def __init__(self, num_pilot_elems=88, total_grid_elems=1848, n_filter=2, **kwargs):
         super(ResidualConvDecoderBlock, self).__init__(**kwargs)
-        self.num_pilot_elems = num_pilot_elems    # 72
-        self.total_grid_elems = total_grid_elems  # N_s * N_f = 14 * 72 = 1008
+        self.num_pilot_elems = num_pilot_elems    # 88
+        self.total_grid_elems = total_grid_elems  # N_s * N_f = 14 * 132 = 1848
+        self.num_subcarriers = total_grid_elems // 14
         self.n_filter = n_filter                  # 2 filters
         
-        # First Conv Layer (operates on 2D feature map [72, 2, 1])
+        # First Conv Layer (operates on 2D feature map [88, 2, 1])
         self.conv1 = layers.Conv2D(filters=n_filter, kernel_size=(2, 2), padding='same', name="conv1")
         
         # Residual Block: Conv -> ReLU -> Conv
@@ -124,7 +125,7 @@ class ResidualConvDecoderBlock(layers.Layer):
         self.res_conv2 = layers.Conv2D(filters=n_filter, kernel_size=(2, 2), padding='same', name="res_conv2")
         self.norm = layers.BatchNormalization(name="batch_norm")
         
-        # FC Layer for Upsampling from pilot dimension (72) to full slot dimension (1008 = 14 * 72)
+        # FC Layer for Upsampling from pilot dimension (88) to full slot dimension (1848 = 14 * 132)
         self.fc_upsample = layers.Dense(total_grid_elems, name="fc_upsample")
         
         # Final Convolutional layer (maps n_filter -> 1 channel)
@@ -132,34 +133,34 @@ class ResidualConvDecoderBlock(layers.Layer):
 
     def call(self, inputs, training=False):
         """
-        Input shape: (B, 72, 2) from Transformer Encoder
+        Input shape: (B, num_pilot_elems, 2) from Transformer Encoder
         """
         B = tf.shape(inputs)[0]
         
-        # Format as 2D spatial feature map: (B, 72, 2, 1) [NHWC]
+        # Format as 2D spatial feature map: (B, self.num_pilot_elems, 2, 1) [NHWC]
         x_img = tf.expand_dims(inputs, axis=-1)
         
         # Conv 1
-        h1 = self.conv1(x_img)  # (B, 72, 2, n_filter)
+        h1 = self.conv1(x_img)  # (B, self.num_pilot_elems, 2, n_filter)
         
         # Residual Block
         res = self.res_conv1(h1)
         res = self.relu(res)
         res = self.res_conv2(res)
-        h2 = self.norm(h1 + res, training=training)  # (B, 72, 2, n_filter)
+        h2 = self.norm(h1 + res, training=training)  # (B, self.num_pilot_elems, 2, n_filter)
         
-        # Upsampling via Dense layer along spatial pilot axis (H=72 -> 1008)
-        # Transpose H (72) to last dimension for Dense projection: (B, n_filter, 2, 72)
+        # Upsampling via Dense layer along spatial pilot axis (H=num_pilot_elems -> total_grid_elems)
+        # Transpose H (num_pilot_elems) to last dimension for Dense projection: (B, n_filter, 2, num_pilot_elems)
         h2_trans = tf.transpose(h2, [0, 3, 2, 1])
-        h2_upsampled = self.fc_upsample(h2_trans)   # (B, n_filter, 2, 1008)
-        h2_upsampled = tf.transpose(h2_upsampled, [0, 3, 2, 1])  # (B, 1008, 2, n_filter)
+        h2_upsampled = self.fc_upsample(h2_trans)   # (B, n_filter, 2, self.total_grid_elems)
+        h2_upsampled = tf.transpose(h2_upsampled, [0, 3, 2, 1])  # (B, self.total_grid_elems, 2, n_filter)
         
         # Final Conv layer
-        out = self.conv_out(h2_upsampled)  # (B, 1008, 2, 1)
-        out = tf.squeeze(out, axis=-1)     # (B, 1008, 2)
+        out = self.conv_out(h2_upsampled)  # (B, self.total_grid_elems, 2, 1)
+        out = tf.squeeze(out, axis=-1)     # (B, self.total_grid_elems, 2)
         
-        # Reshape to 2D channel grid (B, 14, 72, 2) corresponding to (N_s, N_f, Real/Imag)
-        out_grid = tf.reshape(out, [B, 14, 72, 2])
+        # Reshape to 2D channel grid (B, 14, num_subcarriers, 2) corresponding to (N_s, N_f, Real/Imag)
+        out_grid = tf.reshape(out, [B, 14, self.num_subcarriers, 2])
         return out_grid
 
 
@@ -171,9 +172,9 @@ class HA02Model(models.Model):
     """
     Complete HA02 Hybrid Architecture combining:
     1. Transformer Encoder Stack (Attention pre-processor for sparse LS pilots)
-    2. Residual Convolutional Architecture (Decoder + Upsampler to full 14x72 grid)
+    2. Residual Convolutional Architecture (Decoder + Upsampler to full 14x132 grid)
     """
-    def __init__(self, num_pilot_elems=72, total_grid_elems=1008, num_channels=2, num_heads=2, n_filter=2, **kwargs):
+    def __init__(self, num_pilot_elems=88, total_grid_elems=1848, num_channels=2, num_heads=2, n_filter=2, **kwargs):
         super(HA02Model, self).__init__(**kwargs)
         self.encoder = TransformerEncoderBlock(
             num_pilot_elems=num_pilot_elems, 
@@ -188,8 +189,8 @@ class HA02Model(models.Model):
 
     def call(self, inputs, training=False):
         """
-        Input:  (batch_size, 72, 2)     -- Sparse LS estimates at pilot locations (Real & Imag)
-        Output: (batch_size, 14, 72, 2) -- Reconstructed full channel grid (14 symbols x 72 subcarriers x 2)
+        Input:  (batch_size, num_pilot_elems, 2)     -- Sparse LS estimates at pilot locations (Real & Imag)
+        Output: (batch_size, 14, num_subcarriers, 2) -- Reconstructed full channel grid (14 symbols x num_subcarriers x 2)
         """
         encoder_out = self.encoder(inputs)
         full_grid_out = self.decoder(encoder_out, training=training)
@@ -233,7 +234,7 @@ if __name__ == '__main__':
     
     # Run dummy input to build weights
     batch_size = 8
-    dummy_input = tf.random.normal([batch_size, 72, 2])
+    dummy_input = tf.random.normal([batch_size, 88, 2])
     output = model(dummy_input, training=False)
     
     # 2. Count parameters
@@ -245,11 +246,11 @@ if __name__ == '__main__':
     print(f" - Encoder (Transformer Stack) Parameters: {encoder_params:,}")
     print(f" - Decoder (Residual Conv) Parameters:     {decoder_params:,}")
     print(f" - Total HA02 Trainable Parameters:        {total_params:,}")
-    print(f"   (Reference in paper: ~105,607 parameters)\n")
+    print(f"   (Reference in paper for 72 pilots: ~105,607 parameters)\n")
     
     print(f"[Forward Pass Verification]")
     print(f" - Input Shape:  {list(dummy_input.shape)}  (Batch, Pilots, Real/Imag)")
-    print(f" - Output Shape: {list(output.shape)} (Batch, Symbols=14, Subcarriers=72, Real/Imag)")
+    print(f" - Output Shape: {list(output.shape)} (Batch, Symbols=14, Subcarriers=132, Real/Imag)")
     
     # 3. Model Architecture Detail
     print("\n[Architecture Breakdown]")
@@ -262,8 +263,8 @@ if __name__ == '__main__':
     print(" 2. Decoder: ResidualConvDecoderBlock")
     print("    - Conv2D (1 -> 2 filters, kernel 2x2, padding same)")
     print("    - Residual Block (Conv2D -> ReLU -> Conv2D + BatchNorm)")
-    print("    - Upsampling Dense Layer (72 pilots -> 1008 total grid elements)")
+    print("    - Upsampling Dense Layer (88 pilots -> 1848 total grid elements)")
     print("    - Conv2D Output Layer (2 -> 1 filter, kernel 2x2, padding same)")
-    print("    - Reshape to (14 symbols, 72 subcarriers, 2 channels)")
+    print("    - Reshape to (14 symbols, 132 subcarriers, 2 channels)")
     print("=" * 70)
 
