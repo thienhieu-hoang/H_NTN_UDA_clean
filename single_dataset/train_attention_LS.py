@@ -504,6 +504,57 @@ def infer_channel(model, H_perfect_data, H_input_pilots, batch_size=16, lower_ra
         
     return np.concatenate(H_pred_all, axis=0)
 
+def save_model_to_mat(model, save_dir, filename, args):
+    """
+    Save the Keras model weights and architecture configuration to a .mat file
+    that can be easily loaded in both MATLAB and Python.
+    """
+    arch_dict = {
+        'num_pilot_elems': int(getattr(args, 'num_pilot_elems', 88)),
+        'total_grid_elems': int(getattr(args, 'total_grid_elems', 1848)),
+        'num_heads': 2,
+        'n_filter': 2,
+        'num_channels': 2,
+        'snr': int(args.snr),
+        'input_type': str(args.input_type),
+        'loss_type': str(args.loss_type)
+    }
+    
+    weights_dict = {}
+    for var in model.weights:
+        # Replace invalid MATLAB struct variable characters with underscores
+        clean_name = var.name.replace('/', '_').replace(':', '_').replace('-', '_').replace('.', '_')
+        weights_dict[clean_name] = var.numpy()
+        
+    mat_path = os.path.join(save_dir, filename)
+    scipy.io.savemat(mat_path, {
+        'architecture': arch_dict,
+        'weights': weights_dict
+    })
+    print(f'[Save] Model saved in .mat format to: {mat_path}')
+
+def load_model_from_mat(model, mat_path):
+    """
+    Load model weights from a .mat file back into the Keras model.
+    """
+    mat = scipy.io.loadmat(mat_path)
+    weights_struct = mat['weights'][0, 0]
+    
+    new_weights = []
+    for var in model.weights:
+        clean_name = var.name.replace('/', '_').replace(':', '_').replace('-', '_').replace('.', '_')
+        if clean_name in weights_struct.dtype.names:
+            weight_val = weights_struct[clean_name]
+            if weight_val.shape != var.shape:
+                weight_val = weight_val.reshape(var.shape)
+            new_weights.append(weight_val)
+        else:
+            print(f'[Warning] Weight {var.name} ({clean_name}) not found in .mat file!')
+            new_weights.append(var.numpy())
+            
+    model.set_weights(new_weights)
+    print(f'[Load] Model weights loaded from: {mat_path}')
+
 # =============================================================================
 # Main Script
 # =============================================================================
@@ -672,6 +723,7 @@ def main():
             best_epoch    = epoch + 1
             if args.save_model:
                 model.save_weights(os.path.join(save_dir, 'best.weights.h5'))
+                save_model_to_mat(model, save_dir, 'best_model.mat', args)
 
         # Log progress
         if (epoch + 1) % 10 == 0 or epoch == 0 or (epoch + 1) == args.epochs:
@@ -683,6 +735,7 @@ def main():
     # Save final model
     if args.save_model:
         model.save_weights(os.path.join(save_dir, 'final.weights.h5'))
+        save_model_to_mat(model, save_dir, 'final_model.mat', args)
 
     # Save Loss Plots
     save_loss_plot_pdf(history, os.path.join(save_dir, 'results'))
