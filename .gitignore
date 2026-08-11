@@ -2,6 +2,7 @@ __pycache__/
 *.h5
 *.mat
 !single_dataset/**/*.mat
+!single_dataset/**/*.h5
 *.sh
 *.out
 *.err
