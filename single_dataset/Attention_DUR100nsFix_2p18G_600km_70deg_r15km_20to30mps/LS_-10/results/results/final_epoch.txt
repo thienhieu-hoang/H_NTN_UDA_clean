@@ -6,24 +6,24 @@ Best Training Epoch:  200
 
 --- TRAIN SET METRICS ---
 LI Benchmark MMSE:    3.204794e-18
-HA02 Output MMSE:     6.891428e-20
+HA02 Output MMSE:     1.946705e-20
 LI Benchmark NMSE:    1.262105e+01 (11.01 dB)
-HA02 Output NMSE:     2.713968e-01 (-5.66 dB)
+HA02 Output NMSE:     7.666472e-02 (-11.15 dB)
 LI Benchmark SSIM:    0.0035
-HA02 Output SSIM:     0.5546
+HA02 Output SSIM:     0.7423
 
 --- VALIDATION SET METRICS ---
 LI Benchmark MMSE:    3.003104e-18
-HA02 Output MMSE:     9.750636e-20
+HA02 Output MMSE:     8.835864e-20
 LI Benchmark NMSE:    1.271525e+01 (11.04 dB)
-HA02 Output NMSE:     4.128453e-01 (-3.84 dB)
+HA02 Output NMSE:     3.741135e-01 (-4.27 dB)
 LI Benchmark SSIM:    0.0037
-HA02 Output SSIM:     0.4576
+HA02 Output SSIM:     0.5168
 
 --- TEST SET METRICS ---
 LI Benchmark MMSE:    3.008197e-18
-HA02 Output MMSE:     8.807574e-20
+HA02 Output MMSE:     7.558755e-20
 LI Benchmark NMSE:    1.196450e+01 (10.78 dB)
-HA02 Output NMSE:     3.503036e-01 (-4.56 dB)
+HA02 Output NMSE:     3.006344e-01 (-5.22 dB)
 LI Benchmark SSIM:    0.0029
-HA02 Output SSIM:     0.4835
+HA02 Output SSIM:     0.5540
