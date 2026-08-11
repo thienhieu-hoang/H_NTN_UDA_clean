@@ -187,7 +187,7 @@ def load_mat_data(mat_path: str, input_type: str):
     H_perfect = H_perfect.astype(np.complex64)
     H_input   = H_input.astype(np.complex64)
     print(f'  Loaded H_perfect {H_perfect.shape}  |  H_input ({input_key}) {H_input.shape}')
-    return H_perfect, H_input
+    return H_perfect, H_input, mat
 
 
 def split_indices(N: int, train_frac: float, val_frac: float, seed: int = 1234):
@@ -217,7 +217,8 @@ def to_structured(H: np.ndarray) -> np.ndarray:
 # Pre-processing
 # ────────────────────────────────────────────────────────────────────────────
 def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray,
-                     lower_range: int):
+                     lower_range: int, clip_extrap: bool = False,
+                     pilot_bounds: tuple = None):
     """
     Convert complex batches to scaled real-valued TF tensors.
     """
@@ -226,6 +227,24 @@ def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray,
 
     x = tf.transpose(x, (0, 2, 3, 1))
     y = tf.transpose(y, (0, 2, 3, 1))
+
+    if clip_extrap and pilot_bounds is not None:
+        row_min, row_max_idx, col_min, col_max_idx = pilot_bounds
+        real = x[:, :, :, 0]
+        imag = x[:, :, :, 1]
+        
+        roi_real = real[:, row_min:row_max_idx, col_min:col_max_idx]
+        roi_imag = imag[:, row_min:row_max_idx, col_min:col_max_idx]
+        
+        min_real = tf.reduce_min(roi_real, axis=(1, 2), keepdims=True)
+        max_real = tf.reduce_max(roi_real, axis=(1, 2), keepdims=True)
+        min_imag = tf.reduce_min(roi_imag, axis=(1, 2), keepdims=True)
+        max_imag = tf.reduce_max(roi_imag, axis=(1, 2), keepdims=True)
+        
+        real_clipped = tf.clip_by_value(real, min_real, max_real)
+        imag_clipped = tf.clip_by_value(imag, min_imag, max_imag)
+        
+        x = tf.stack([real_clipped, imag_clipped], axis=-1)
 
     x_scaled, x_min, x_max = minmaxScaler(x, lower_range=lower_range)
     y_scaled, _,    _      = minmaxScaler(y, min_pre=x_min, max_pre=x_max,
@@ -478,7 +497,9 @@ def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim
 # ────────────────────────────────────────────────────────────────────────────
 def infer_channel(model: CNNGenerator,
                   H_perf: np.ndarray, H_in: np.ndarray,
-                  batch_size: int, lower_range: int) -> np.ndarray:
+                  batch_size: int, lower_range: int,
+                  clip_extrap: bool = False,
+                  pilot_bounds: tuple = None) -> np.ndarray:
     """
     Run the trained model on a full dataset and return the predicted
     complex channel of shape [N, n_subc, n_symb].
@@ -489,7 +510,8 @@ def infer_channel(model: CNNGenerator,
 
     for i in range(steps):
         sl   = slice(i * batch_size, (i + 1) * batch_size)
-        x_sc, _, x_min, x_max = preprocess_batch(H_perf[sl], H_in[sl], lower_range)
+        x_sc, _, x_min, x_max = preprocess_batch(H_perf[sl], H_in[sl], lower_range,
+                                                 clip_extrap=clip_extrap, pilot_bounds=pilot_bounds)
         residual, _ = model(x_sc, training=False)
         x_corr      = x_sc + residual
         x_denorm    = deMinMax(x_corr, x_min, x_max, lower_range=lower_range)
@@ -499,7 +521,8 @@ def infer_channel(model: CNNGenerator,
     # Remainder batch
     if N % batch_size:
         sl   = slice(steps * batch_size, N)
-        x_sc, _, x_min, x_max = preprocess_batch(H_perf[sl], H_in[sl], lower_range)
+        x_sc, _, x_min, x_max = preprocess_batch(H_perf[sl], H_in[sl], lower_range,
+                                                 clip_extrap=clip_extrap, pilot_bounds=pilot_bounds)
         residual, _ = model(x_sc, training=False)
         x_corr      = x_sc + residual
         x_denorm    = deMinMax(x_corr, x_min, x_max, lower_range=lower_range)
@@ -545,6 +568,8 @@ def main():
                         help='Disable GPU even if available')
     parser.add_argument('--test-code', action='store_true',
                         help='Quick smoke-test with small dataset')
+    parser.add_argument('--clip-extrap', action='store_true',
+                        help='Clip extrapolation values of the input grid to the pilot region bounds')
     parser.add_argument('--ssim-weight-start', type=float, default=DEFAULT_SSIM_START,
                         help='Initial importance weight for SSIM loss at epoch 0.')
     parser.add_argument('--ssim-weight-end', type=float, default=DEFAULT_SSIM_END,
@@ -591,8 +616,17 @@ def main():
     # ── Data loading & splitting ─────────────────────────────────────────────
     mat_path = get_data_path(args.data_root, args.snr)
     print(f'[Data] {mat_path}')
-    H_perfect, H_input = load_mat_data(mat_path, args.input_type)
+    H_perfect, H_input, mat_dict = load_mat_data(mat_path, args.input_type)
     N = H_perfect.shape[0]
+
+    # Calculate pilot bounds dynamically
+    pilot_cols = mat_dict['pilot_cols'].squeeze() - 1
+    pilot_rows = mat_dict['pilot_rows'].squeeze() - 1
+    row_min = int(np.min(pilot_rows))
+    row_max = int(np.max(pilot_rows))
+    col_min = int(np.min(pilot_cols))
+    col_max = int(np.max(pilot_cols))
+    pilot_bounds = (row_min, row_max + 1, col_min, col_max + 1)
 
     idx_train, idx_val, idx_test = split_indices(
         N, args.train_frac, args.val_frac, seed=1234)
@@ -667,7 +701,7 @@ def main():
             batch_idx = idx_e[b * args.batch_size:(b + 1) * args.batch_size]
             h_p = H_perfect[batch_idx]
             h_i = H_input[batch_idx]
-            x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range)
+            x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range, clip_extrap=args.clip_extrap, pilot_bounds=pilot_bounds)
             
             total_l, mse_l, ssim_l = _train_step(model, x_sc, y_sc, optimizer, loss_fn, lower_range, ssim_weight_tf)
             ep_train_loss += total_l.numpy()
@@ -687,7 +721,7 @@ def main():
             batch_idx = idx_val[b * args.batch_size:(b + 1) * args.batch_size]
             h_p = H_perfect[batch_idx]
             h_i = H_input[batch_idx]
-            x_sc, y_sc, x_min, x_max = preprocess_batch(h_p, h_i, lower_range)
+            x_sc, y_sc, x_min, x_max = preprocess_batch(h_p, h_i, lower_range, clip_extrap=args.clip_extrap, pilot_bounds=pilot_bounds)
             residual, _ = model(x_sc, training=False)
             x_corr      = x_sc + residual
             
@@ -789,7 +823,9 @@ def main():
     print('[Eval] Validation set ...')
     H_pred_val = infer_channel(model,
                                H_perfect[idx_val], H_input[idx_val],
-                               args.batch_size, lower_range)
+                               args.batch_size, lower_range,
+                               clip_extrap=args.clip_extrap,
+                               pilot_bounds=pilot_bounds)
 
     mmse_val = compute_mmse(H_pred_val, H_perfect[idx_val])
     nmse_val = compute_nmse(H_pred_val, H_perfect[idx_val])
@@ -806,7 +842,9 @@ def main():
     print('[Eval] Test set ...')
     H_pred_test = infer_channel(model,
                                 H_perfect[idx_test], H_input[idx_test],
-                                args.batch_size, lower_range)
+                                args.batch_size, lower_range,
+                                clip_extrap=args.clip_extrap,
+                                pilot_bounds=pilot_bounds)
 
     mmse_test = compute_mmse(H_pred_test, H_perfect[idx_test])
     nmse_test = compute_nmse(H_pred_test, H_perfect[idx_test])
@@ -823,7 +861,9 @@ def main():
     print('[Eval] Training set ...')
     H_pred_train = infer_channel(model,
                                  H_perfect[idx_train], H_input[idx_train],
-                                 args.batch_size, lower_range)
+                                 args.batch_size, lower_range,
+                                 clip_extrap=args.clip_extrap,
+                                 pilot_bounds=pilot_bounds)
 
     mmse_train = compute_mmse(H_pred_train, H_perfect[idx_train])
     nmse_train = compute_nmse(H_pred_train, H_perfect[idx_train])
@@ -933,7 +973,9 @@ def main():
             H_perfect[train_sample_idx:train_sample_idx+1],
             H_input[train_sample_idx:train_sample_idx+1],
             batch_size=1,
-            lower_range=lower_range
+            lower_range=lower_range,
+            clip_extrap=args.clip_extrap,
+            pilot_bounds=pilot_bounds
         )[0]
 
         train_sample_mat_path = os.path.join(save_dir, 'channel_grids_train_sample1.mat')
@@ -975,7 +1017,7 @@ def main():
                 f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n"
                 f"  {'MMSE (MSE)':<14} {mmse_in_val:<20.6e} {mmse_val:<20.6e} {'Yes' if mmse_val < mmse_in_val else 'No'}\n"
                 f"  {'NMSE':<14} {nmse_in_val:<20.6f} {nmse_val:<20.6f} {'Yes' if nmse_val < mmse_in_val else 'No'}\n"
-                f"  {'NMSE (dB)':<14} {nmse_in_val_db:<20.2f} {nmse_val_db:<20.2f} {'Yes' if nmse_val_db < mmse_in_val_db else 'No'}\n"
+                f"  {'NMSE (dB)':<14} {nmse_in_val_db:<20.2f} {nmse_val_db:<20.2f} {'Yes' if nmse_val_db < nmse_in_val_db else 'No'}\n"
                 f"  {'SSIM':<14} {ssim_in_val:<20.6f} {ssim_val:<20.6f} {'Yes' if ssim_val > ssim_in_val else 'No'}\n"
                 "============================================================\n\n"
                 "============================================================\n"
