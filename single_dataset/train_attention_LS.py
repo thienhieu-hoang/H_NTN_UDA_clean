@@ -722,7 +722,6 @@ def main():
             best_val_loss = cur_val_loss
             best_epoch    = epoch + 1
             if args.save_model:
-                model.save_weights(os.path.join(save_dir, 'best.weights.h5'))
                 save_model_to_mat(model, save_dir, 'best_model.mat', args)
 
         # Log progress
@@ -734,7 +733,6 @@ def main():
 
     # Save final model
     if args.save_model:
-        model.save_weights(os.path.join(save_dir, 'final.weights.h5'))
         save_model_to_mat(model, save_dir, 'final_model.mat', args)
 
     # Save Loss Plots
