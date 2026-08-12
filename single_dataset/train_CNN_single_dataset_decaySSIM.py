@@ -934,7 +934,7 @@ def main():
         'nmse_test_db':    nmse_test_db,
         'ssim_test':       ssim_test,
         'mmse_input_test': mmse_in_test,
-        'nmse_input_test': mmse_in_test,
+        'nmse_input_test': nmse_in_test,
         'nmse_input_test_db': nmse_in_test_db,
         'ssim_input_test': ssim_in_test,
         # --- Meta ---
@@ -1026,7 +1026,7 @@ def main():
                 f"  {'Metric':<14} {'Raw Input':<20} {'CNN Output':<20} {'Improvement?'}\n"
                 f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n"
                 f"  {'MMSE (MSE)':<14} {mmse_in_test:<20.6e} {mmse_test:<20.6e} {'Yes' if mmse_test < mmse_in_test else 'No'}\n"
-                f"  {'NMSE':<14} {nmse_in_test:<20.6f} {nmse_test:<20.6f} {'Yes' if nmse_test < mmse_in_test else 'No'}\n"
+                f"  {'NMSE':<14} {nmse_in_test:<20.6f} {nmse_test:<20.6f} {'Yes' if nmse_test < nmse_in_test else 'No'}\n"
                 f"  {'NMSE (dB)':<14} {nmse_in_test_db:<20.2f} {nmse_test_db:<20.2f} {'Yes' if nmse_test_db < nmse_in_test_db else 'No'}\n"
                 f"  {'SSIM':<14} {ssim_in_test:<20.6f} {ssim_test:<20.6f} {'Yes' if ssim_test > ssim_in_test else 'No'}\n"
                 "============================================================\n\n"
@@ -1036,7 +1036,7 @@ def main():
                 f"  {'Metric':<14} {'Raw Input':<20} {'CNN Output':<20} {'Improvement?'}\n"
                 f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n"
                 f"  {'MMSE (MSE)':<14} {mmse_in_val:<20.6e} {mmse_val:<20.6e} {'Yes' if mmse_val < mmse_in_val else 'No'}\n"
-                f"  {'NMSE':<14} {nmse_in_val:<20.6f} {nmse_val:<20.6f} {'Yes' if nmse_val < mmse_in_val else 'No'}\n"
+                f"  {'NMSE':<14} {nmse_in_val:<20.6f} {nmse_val:<20.6f} {'Yes' if nmse_val < nmse_in_val else 'No'}\n"
                 f"  {'NMSE (dB)':<14} {nmse_in_val_db:<20.2f} {nmse_val_db:<20.2f} {'Yes' if nmse_val_db < nmse_in_val_db else 'No'}\n"
                 f"  {'SSIM':<14} {ssim_in_val:<20.6f} {ssim_val:<20.6f} {'Yes' if ssim_val > ssim_in_val else 'No'}\n"
                 "============================================================\n\n"
@@ -1046,7 +1046,7 @@ def main():
                 f"  {'Metric':<14} {'Raw Input':<20} {'CNN Output':<20} {'Improvement?'}\n"
                 f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n"
                 f"  {'MMSE (MSE)':<14} {mmse_in_train:<20.6e} {mmse_train:<20.6e} {'Yes' if mmse_train < mmse_in_train else 'No'}\n"
-                f"  {'NMSE':<14} {nmse_in_train:<20.6f} {nmse_train:<20.6f} {'Yes' if nmse_train < mmse_in_train else 'No'}\n"
+                f"  {'NMSE':<14} {nmse_in_train:<20.6f} {nmse_train:<20.6f} {'Yes' if nmse_train < nmse_in_train else 'No'}\n"
                 f"  {'NMSE (dB)':<14} {nmse_in_train_db:<20.2f} {nmse_train_db:<20.2f} {'Yes' if nmse_train_db < nmse_in_train_db else 'No'}\n"
                 f"  {'SSIM':<14} {ssim_in_train:<20.6f} {ssim_train:<20.6f} {'Yes' if ssim_train > ssim_in_train else 'No'}\n"
                 "============================================================\n"
@@ -1057,27 +1057,6 @@ def main():
 
     print(f'\n[Done] Finished in {time.perf_counter() - t_start:.1f} s')
 
-
-# ────────────────────────────────────────────────────────────────────────────
-# HOW TO RELOAD A SAVED MODEL
-# ────────────────────────────────────────────────────────────────────────────
-def load_trained_model(save_dir: str,
-                       n_blocks: int = DEFAULT_N_BLOCKS,
-                       use_best: bool = True) -> CNNGenerator:
-    """Reload a previously trained CNNGenerator from disk."""
-    filename = 'best.weights.h5' if use_best else 'final.weights.h5'
-    ckpt     = os.path.join(save_dir, filename)
-    if not os.path.exists(ckpt):
-        fallback = os.path.join(save_dir, 'best' if use_best else 'final')
-        if os.path.exists(fallback) or os.path.exists(fallback + '.index'):
-            ckpt = fallback
-
-    dummy = tf.zeros((1, 132, 14, 2))
-    model(dummy, training=False)
-
-    model.load_weights(ckpt)
-    print(f'[Reload] {"best" if use_best else "final"} weights loaded from: {ckpt}')
-    return model
 
 
 if __name__ == '__main__':
