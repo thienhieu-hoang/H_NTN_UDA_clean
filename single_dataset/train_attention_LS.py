@@ -521,10 +521,13 @@ def save_model_to_mat(model, save_dir, filename, args):
     }
     
     weights_dict = {}
-    for var in model.weights:
+    for i, var in enumerate(model.weights):
         # Replace invalid MATLAB struct variable characters with underscores
         clean_name = var.name.replace('/', '_').replace(':', '_').replace('-', '_').replace('.', '_')
-        weights_dict[clean_name] = var.numpy()
+        prefix = f"w{i:02d}_"
+        allowed_suffix_len = 31 - len(prefix) # 27 characters
+        short_name = prefix + clean_name[-allowed_suffix_len:]
+        weights_dict[short_name] = var.numpy()
         
     mat_path = os.path.join(save_dir, filename)
     scipy.io.savemat(mat_path, {
@@ -541,15 +544,18 @@ def load_model_from_mat(model, mat_path):
     weights_struct = mat['weights'][0, 0]
     
     new_weights = []
-    for var in model.weights:
+    for i, var in enumerate(model.weights):
         clean_name = var.name.replace('/', '_').replace(':', '_').replace('-', '_').replace('.', '_')
-        if clean_name in weights_struct.dtype.names:
-            weight_val = weights_struct[clean_name]
+        prefix = f"w{i:02d}_"
+        allowed_suffix_len = 31 - len(prefix)
+        short_name = prefix + clean_name[-allowed_suffix_len:]
+        if short_name in weights_struct.dtype.names:
+            weight_val = weights_struct[short_name]
             if weight_val.shape != var.shape:
                 weight_val = weight_val.reshape(var.shape)
             new_weights.append(weight_val)
         else:
-            print(f'[Warning] Weight {var.name} ({clean_name}) not found in .mat file!')
+            print(f'[Warning] Weight {var.name} ({short_name}) not found in .mat file!')
             new_weights.append(var.numpy())
             
     model.set_weights(new_weights)
@@ -817,6 +823,23 @@ def main():
         'mmse_li_benchmark_test': mmse_li_benchmark_test, 'nmse_li_benchmark_test': nmse_li_benchmark_test, 'nmse_li_benchmark_test_db': nmse_li_benchmark_test_db, 'ssim_li_benchmark_test': ssim_li_benchmark_test,
         'snr': args.snr, 'input_type': args.input_type, 'best_epoch': best_epoch
     })
+
+    # Copy readme*.md from dataset folder to results directory
+    try:
+        import shutil
+        import glob
+        snr_folder_name = SNR_FOLDER_MAP.get(args.snr, f'{args.snr}dB')
+        md_pattern = os.path.join(PROJECT_ROOT, 'generatedChan', 'OpenNTN', DATA_FOLDER_NAME, snr_folder_name, 'readme*.md')
+        md_matches = glob.glob(md_pattern)
+        target_dir = os.path.join(save_dir, 'results')
+        if md_matches:
+            md_src = md_matches[0]
+            shutil.copy(md_src, target_dir)
+            print(f"[Save] Copied dataset readme ({os.path.basename(md_src)}) to: {target_dir}")
+        else:
+            print(f"[Save Warning] Metadata readme matching '{md_pattern}' not found.")
+    except Exception as e:
+        print(f"[Save Warning] Failed to copy metadata readme: {e}")
 
     # Save plots
     if len(idx_test) > 0:

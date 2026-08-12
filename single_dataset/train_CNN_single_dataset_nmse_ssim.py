@@ -918,6 +918,23 @@ def main():
     })
     print(f'[Save] Evaluation results -> {eval_path}')
 
+    # Copy readme*.md from dataset folder to results directory
+    try:
+        import shutil
+        import glob
+        snr_folder_name = SNR_FOLDER_MAP.get(args.snr, f'{args.snr}dB')
+        md_pattern = os.path.join(PROJECT_ROOT, 'generatedChan', 'OpenNTN', DATA_FOLDER_NAME, snr_folder_name, 'readme*.md')
+        md_matches = glob.glob(md_pattern)
+        target_dir = save_dir
+        if md_matches:
+            md_src = md_matches[0]
+            shutil.copy(md_src, target_dir)
+            print(f"[Save] Copied dataset readme ({os.path.basename(md_src)}) to: {target_dir}")
+        else:
+            print(f"[Save Warning] Metadata readme matching '{md_pattern}' not found.")
+    except Exception as e:
+        print(f"[Save Warning] Failed to copy metadata readme: {e}")
+
     # ── Export PDF Heatmap Visualizations & Save Complex Grids for Test and Train Sample 1 ────
     if len(idx_test) > 0:
         sample_idx = idx_test[0]
