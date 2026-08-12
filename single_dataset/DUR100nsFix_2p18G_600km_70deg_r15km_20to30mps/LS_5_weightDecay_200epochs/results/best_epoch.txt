@@ -1,5 +1,5 @@
 best_epoch       = 200
-best_val_loss    = 0.03844580
+best_val_loss    = 0.03755233
 snr              = 5 dB
 input_type       = ls
 total_epochs     = 200

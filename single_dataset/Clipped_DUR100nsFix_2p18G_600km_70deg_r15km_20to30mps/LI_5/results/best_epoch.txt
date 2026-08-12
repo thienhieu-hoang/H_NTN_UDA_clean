@@ -1,5 +1,5 @@
 best_epoch       = 200
-best_val_loss    = 0.03695962
+best_val_loss    = 0.03681633
 snr              = 5 dB
 input_type       = li
 total_epochs     = 200
