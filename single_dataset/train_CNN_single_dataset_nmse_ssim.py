@@ -246,12 +246,12 @@ def compute_nmse(H_pred: np.ndarray, H_true: np.ndarray) -> float:
     """Normalised MSE (averaged over samples)."""
     num   = np.mean(np.abs(H_pred - H_true) ** 2, axis=(1, 2))
     denom = np.mean(np.abs(H_true) ** 2,           axis=(1, 2))
-    return float(np.mean(num / (denom + 1e-12)))
+    return float(np.mean(num / (denom + 1e-30)))
 
 
 def compute_nmse_db(H_pred: np.ndarray, H_true: np.ndarray) -> float:
     """NMSE in dB."""
-    return 10.0 * np.log10(compute_nmse(H_pred, H_true) + 1e-12)
+    return 10.0 * np.log10(compute_nmse(H_pred, H_true) + 1e-30)
 
 
 def compute_ssim_batch(H_pred: np.ndarray, H_true: np.ndarray) -> float:
@@ -688,7 +688,7 @@ def main():
             y_np = y_sc.numpy()
             diff_sq = np.mean((x_np - y_np) ** 2, axis=(1, 2, 3))
             ref_sq  = np.mean(y_np ** 2,           axis=(1, 2, 3))
-            ep_val_nmse += float(np.mean(diff_sq / (ref_sq + 1e-12)))
+            ep_val_nmse += float(np.mean(diff_sq / (ref_sq + 1e-30)))
 
         avg_val_loss = ep_val_loss / max(n_val_batches, 1)
         avg_val_mse  = ep_val_mse / max(n_val_batches, 1)
@@ -777,13 +777,13 @@ def main():
     mmse_val = compute_mmse(H_pred_val, H_perfect[idx_val])
     nmse_val = compute_nmse(H_pred_val, H_perfect[idx_val])
     ssim_val = compute_ssim_batch(H_pred_val, H_perfect[idx_val])
-    nmse_val_db = 10.0 * np.log10(nmse_val + 1e-12)
+    nmse_val_db = 10.0 * np.log10(nmse_val + 1e-30)
 
     # Raw noisy baseline on validation
     mmse_in_val = compute_mmse(H_input[idx_val], H_perfect[idx_val])
     nmse_in_val = compute_nmse(H_input[idx_val], H_perfect[idx_val])
     ssim_in_val = compute_ssim_batch(H_input[idx_val], H_perfect[idx_val])
-    nmse_in_val_db = 10.0 * np.log10(nmse_in_val + 1e-12)
+    nmse_in_val_db = 10.0 * np.log10(nmse_in_val + 1e-30)
 
     # ── Evaluation on TEST set ────────────────────────────────────────────────
     print('[Eval] Test set ...')
@@ -794,13 +794,13 @@ def main():
     mmse_test = compute_mmse(H_pred_test, H_perfect[idx_test])
     nmse_test = compute_nmse(H_pred_test, H_perfect[idx_test])
     ssim_test = compute_ssim_batch(H_pred_test, H_perfect[idx_test])
-    nmse_test_db = 10.0 * np.log10(nmse_test + 1e-12)
+    nmse_test_db = 10.0 * np.log10(nmse_test + 1e-30)
 
     # Raw noisy baseline on test
     mmse_in_test = compute_mmse(H_input[idx_test], H_perfect[idx_test])
     nmse_in_test = compute_nmse(H_input[idx_test], H_perfect[idx_test])
     ssim_in_test = compute_ssim_batch(H_input[idx_test], H_perfect[idx_test])
-    nmse_in_test_db = 10.0 * np.log10(nmse_in_test + 1e-12)
+    nmse_in_test_db = 10.0 * np.log10(nmse_in_test + 1e-30)
 
     # ── Evaluation on TRAINING set ───────────────────────────────────────────
     print('[Eval] Training set ...')
@@ -811,13 +811,13 @@ def main():
     mmse_train = compute_mmse(H_pred_train, H_perfect[idx_train])
     nmse_train = compute_nmse(H_pred_train, H_perfect[idx_train])
     ssim_train = compute_ssim_batch(H_pred_train, H_perfect[idx_train])
-    nmse_train_db = 10.0 * np.log10(nmse_train + 1e-12)
+    nmse_train_db = 10.0 * np.log10(nmse_train + 1e-30)
 
     # Raw noisy baseline on training
     mmse_in_train = compute_mmse(H_input[idx_train], H_perfect[idx_train])
     nmse_in_train = compute_nmse(H_input[idx_train], H_perfect[idx_train])
     ssim_in_train = compute_ssim_batch(H_input[idx_train], H_perfect[idx_train])
-    nmse_in_train_db = 10.0 * np.log10(nmse_in_train + 1e-12)
+    nmse_in_train_db = 10.0 * np.log10(nmse_in_train + 1e-30)
 
     # ── Results table ─────────────────────────────────────────────────────────
     hdr = f'  SNR={args.snr:+d} dB  |  input type: {args.input_type}  |  ssim_weight: {args.ssim_weight:.3f}'
@@ -831,7 +831,11 @@ def main():
     print(f'  {"[TRAIN]":<14}')
     print(f'  {"  MMSE":<14} {mmse_in_train:<20.6e} {mmse_train:<20.6e}')
     print(f'  {"  NMSE":<14} {nmse_in_train:<20.6f} {nmse_train:<20.6f}')
-    print(f'  {"  NMSE(dB)":<14} {nmse_in_train_db:<20.2f} {nms    # Write final_epoch.txt report
+    print(f'  {"  NMSE(dB)":<14} {nmse_in_train_db:<20.2f} {nmse_train_db:<20.2f}')
+    print(f'  {"  SSIM":<14} {ssim_in_train:<20.6f} {ssim_train:<20.6f}')
+    print('═' * 60)
+
+    # Write final_epoch.txt report
     report_path = os.path.join(save_dir, 'final_epoch.txt')
     try:
         with open(report_path, 'w') as fh:
@@ -870,7 +874,46 @@ def main():
             )
         print(f'[Save] Final epoch text report -> {report_path}')
     except Exception as e:
-        print(f'[Save Warning] Failed to write final_epoch.txt report: {e}')weight':     args.ssim_weight,
+        print(f'[Save Warning] Failed to write final_epoch.txt report: {e}')
+
+    # ── Save evaluation .mat ──────────────────────────────────────────────────
+    eval_path = os.path.join(save_dir, 'evaluation_results.mat')
+    scipy.io.savemat(eval_path, {
+        # --- Train ---
+        'mmse_train':      mmse_train,
+        'nmse_train':      nmse_train,
+        'nmse_train_db':   nmse_train_db,
+        'ssim_train':      ssim_train,
+        'mmse_input_train': mmse_in_train,
+        'nmse_input_train': nmse_in_train,
+        'nmse_input_train_db': nmse_in_train_db,
+        'ssim_input_train': ssim_in_train,
+        # --- Validation ---
+        'mmse_val':        mmse_val,
+        'nmse_val':        nmse_val,
+        'nmse_val_db':     nmse_val_db,
+        'ssim_val':        ssim_val,
+        'mmse_input_val':  mmse_in_val,
+        'nmse_input_val':  nmse_in_val,
+        'nmse_input_val_db': nmse_in_val_db,
+        'ssim_input_val':  ssim_in_val,
+        # --- Test ---
+        'mmse_test':       mmse_test,
+        'nmse_test':       nmse_test,
+        'nmse_test_db':    nmse_test_db,
+        'ssim_test':       ssim_test,
+        'mmse_input_test': mmse_in_test,
+        'nmse_input_test': mmse_in_test,
+        'nmse_input_test_db': nmse_in_test_db,
+        'ssim_input_test': ssim_in_test,
+        # --- Meta ---
+        'snr':             args.snr,
+        'input_type':      args.input_type,
+        'n_train':         len(idx_train),
+        'n_val':           len(idx_val),
+        'n_test':          len(idx_test),
+        'best_epoch':      best_epoch,
+        'ssim_weight':     args.ssim_weight,
         'mse_weight':      1.0 - args.ssim_weight,
     })
     print(f'[Save] Evaluation results -> {eval_path}')
