@@ -1,4 +1,13 @@
 """
+Single-Dataset Attention-based Channel Estimator with Dynamic MSE & SSIM Loss Schedule (OpenNTN)
+=====================================================================================
+Train, evaluate, and test a Attention-based Generator on ONE SNR split of the OpenNTN dataset.
+All data (train / val / test) come from the *same* SNR folder.
+This script uses a dynamic scheduling approach for combining MSE and SSIM:
+  - Start with a large SSIM weight to help the model learn coarse layout structures first.
+  - Linearly decay the SSIM weight to a smaller value over the training epochs.
+  - Let the MSE loss dominate in the later epochs to fine-tune the absolute coefficient values.
+====================================================================================
 Workflow: 
 - Input: 
     - H_LS sequence (only values at the pilot positions)
