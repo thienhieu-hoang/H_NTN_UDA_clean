@@ -504,62 +504,23 @@ def infer_channel(model, H_perfect_data, H_input_pilots, batch_size=16, lower_ra
         
     return np.concatenate(H_pred_all, axis=0)
 
-def save_model_to_mat(model, save_dir, filename, args):
-    """
-    Save the Keras model weights and architecture configuration to a .mat file
-    that can be easily loaded in both MATLAB and Python.
-    """
-    arch_dict = {
-        'num_pilot_elems': int(getattr(args, 'num_pilot_elems', 88)),
-        'total_grid_elems': int(getattr(args, 'total_grid_elems', 1848)),
-        'num_heads': 2,
-        'n_filter': 2,
-        'num_channels': 2,
-        'snr': int(args.snr),
-        'input_type': str(args.input_type),
-        'loss_type': str(args.loss_type)
-    }
-    
-    weights_dict = {}
-    for i, var in enumerate(model.weights):
-        # Replace invalid MATLAB struct variable characters with underscores
-        clean_name = var.name.replace('/', '_').replace(':', '_').replace('-', '_').replace('.', '_')
-        prefix = f"w{i:02d}_"
-        allowed_suffix_len = 31 - len(prefix) # 27 characters
-        short_name = prefix + clean_name[-allowed_suffix_len:]
-        weights_dict[short_name] = var.numpy()
-        
-    mat_path = os.path.join(save_dir, filename)
-    scipy.io.savemat(mat_path, {
-        'architecture': arch_dict,
-        'weights': weights_dict
-    })
-    print(f'[Save] Model saved in .mat format to: {mat_path}')
+def export_model_to_onnx(model: tf.keras.Model, save_path: str, input_shape):
+    """Export Keras model to ONNX."""
+    try:
+        import tf2onnx
+    except ImportError:
+        print('[ONNX] Installing tf2onnx package for ONNX model export ...')
+        import subprocess
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'tf2onnx'])
+        import tf2onnx
 
-def load_model_from_mat(model, mat_path):
-    """
-    Load model weights from a .mat file back into the Keras model.
-    """
-    mat = scipy.io.loadmat(mat_path)
-    weights_struct = mat['weights'][0, 0]
-    
-    new_weights = []
-    for i, var in enumerate(model.weights):
-        clean_name = var.name.replace('/', '_').replace(':', '_').replace('-', '_').replace('.', '_')
-        prefix = f"w{i:02d}_"
-        allowed_suffix_len = 31 - len(prefix)
-        short_name = prefix + clean_name[-allowed_suffix_len:]
-        if short_name in weights_struct.dtype.names:
-            weight_val = weights_struct[short_name]
-            if weight_val.shape != var.shape:
-                weight_val = weight_val.reshape(var.shape)
-            new_weights.append(weight_val)
-        else:
-            print(f'[Warning] Weight {var.name} ({short_name}) not found in .mat file!')
-            new_weights.append(var.numpy())
-            
-    model.set_weights(new_weights)
-    print(f'[Load] Model weights loaded from: {mat_path}')
+    try:
+        spec = (tf.TensorSpec(input_shape, tf.float32, name='input_channel'),)
+        model_proto, _ = tf2onnx.convert.from_keras(
+            model, input_signature=spec, output_path=save_path)
+        print(f'[ONNX Export] Saved ONNX model (architecture + weights) -> {save_path}')
+    except Exception as e:
+        print(f'[ONNX Export Warning] Failed to export ONNX model: {e}')
 
 # =============================================================================
 # Main Script
@@ -633,7 +594,13 @@ def main():
     if args.save_dir:
         save_dir = os.path.abspath(args.save_dir)
     else:
-        loss_name = f"ssim_decay_s{args.ssim_weight_start}_e{args.ssim_weight_end}" if args.loss_type == 'combined' else f"huber_d{args.huber_delta}"
+        if args.loss_type == 'combined':
+            ssim_start_str = str(args.ssim_weight_start).replace('.', '_')
+            ssim_end_str = str(args.ssim_weight_end).replace('.', '_')
+            loss_name = f"ssim_decay_s{ssim_start_str}_e{ssim_end_str}"
+        else:
+            huber_delta_str = str(args.huber_delta).replace('.', '_')
+            loss_name = f"huber_d{huber_delta_str}"
         save_dir = os.path.join(THIS_DIR, 'trained_models_ha02', f'SNR_{args.snr}dB_{args.input_type}_{loss_name}')
     os.makedirs(save_dir, exist_ok=True)
 
@@ -728,7 +695,7 @@ def main():
             best_val_loss = cur_val_loss
             best_epoch    = epoch + 1
             if args.save_model:
-                save_model_to_mat(model, save_dir, 'best_model.mat', args)
+                export_model_to_onnx(model, os.path.join(save_dir, 'best_model.onnx'), (1, H_input_pilots.shape[1], 2))
 
         # Log progress
         if (epoch + 1) % 10 == 0 or epoch == 0 or (epoch + 1) == args.epochs:
@@ -739,10 +706,10 @@ def main():
 
     # Save final model
     if args.save_model:
-        save_model_to_mat(model, save_dir, 'final_model.mat', args)
+        export_model_to_onnx(model, os.path.join(save_dir, 'final_model.onnx'), (1, H_input_pilots.shape[1], 2))
 
     # Save Loss Plots
-    save_loss_plot_pdf(history, os.path.join(save_dir, 'results'))
+    save_loss_plot_pdf(history, os.path.join(save_dir))
 
     # Final Evaluation (Validation + Test sets)
     print('\n[Evaluation] Running final inference on validation & test sets...')
@@ -782,8 +749,8 @@ def main():
     ssim_li_benchmark_test = compute_ssim_batch(H_li_benchmark_grid[idx_test], H_perfect[idx_test])
 
     # Save to final_epoch.txt
-    txt_path = os.path.join(save_dir, 'results', 'final_epoch.txt')
-    os.makedirs(os.path.join(save_dir, 'results'), exist_ok=True)
+    txt_path = os.path.join(save_dir, 'final_epoch.txt')
+    os.makedirs(os.path.join(save_dir), exist_ok=True)
     with open(txt_path, 'w') as f:
         f.write("=== FINAL EPOCH EVALUATION RESULTS ===\n")
         f.write(f"SNR (dB):             {args.snr}\n")
@@ -813,7 +780,7 @@ def main():
         f.write(f"HA02 Output SSIM:     {ssim_test:.4f}\n")
 
     # Save to evaluation_results.mat
-    eval_path = os.path.join(save_dir, 'results', 'evaluation_results.mat')
+    eval_path = os.path.join(save_dir, 'evaluation_results.mat')
     scipy.io.savemat(eval_path, {
         'mmse_train': mmse_train, 'nmse_train': nmse_train, 'nmse_train_db': nmse_train_db, 'ssim_train': ssim_train,
         'mmse_li_benchmark_train': mmse_li_benchmark_train, 'nmse_li_benchmark_train': nmse_li_benchmark_train, 'nmse_li_benchmark_train_db': nmse_li_benchmark_train_db, 'ssim_li_benchmark_train': ssim_li_benchmark_train,
@@ -831,7 +798,7 @@ def main():
         snr_folder_name = SNR_FOLDER_MAP.get(args.snr, f'{args.snr}dB')
         md_pattern = os.path.join(PROJECT_ROOT, 'generatedChan', 'OpenNTN', DATA_FOLDER_NAME, snr_folder_name, 'readme*.md')
         md_matches = glob.glob(md_pattern)
-        target_dir = os.path.join(save_dir, 'results')
+        target_dir = os.path.join(save_dir)
         if md_matches:
             md_src = md_matches[0]
             shutil.copy(md_src, target_dir)
@@ -849,7 +816,7 @@ def main():
             H_pred_test[0],
             pilot_rows, pilot_cols,
             args.input_type,
-            os.path.join(save_dir, 'results'),
+            os.path.join(save_dir),
             prefix='test'
         )
     if len(idx_train) > 0:
@@ -859,7 +826,7 @@ def main():
             H_pred_train[0],
             pilot_rows, pilot_cols,
             args.input_type,
-            os.path.join(save_dir, 'results'),
+            os.path.join(save_dir),
             prefix='train'
         )
 

@@ -315,21 +315,6 @@ def export_model_to_onnx(model: tf.keras.Model, save_path: str,
         print(f'[ONNX Export Warning] Failed to export ONNX model: {e}')
 
 
-def export_model_to_mat(model: tf.keras.Model, save_path: str):
-    """Export trained model weights to .mat."""
-    try:
-        import scipy.io as sio
-        weights_dict = {}
-        for layer in model.layers:
-            if layer.weights:
-                for w in layer.weights:
-                    clean_name = w.name.replace('.', '_').replace('/', '_').replace(':', '_').replace('-', '_')
-                    weights_dict[clean_name] = w.numpy()
-        sio.savemat(save_path, {'onnx_weights': weights_dict})
-        print(f'[MAT Export] Saved MAT model weights -> {save_path}')
-    except Exception as e:
-        print(f'[MAT Export Warning] Failed to export MAT weights: {e}')
-
 
 def save_channel_plots_pdf(H_perf_sample: np.ndarray,
                             H_in_sample: np.ndarray,
@@ -656,8 +641,10 @@ def main():
     if args.save_dir:
         save_dir = os.path.abspath(args.save_dir)
     else:
+        ssim_start_str = str(args.ssim_weight_start).replace('.', '_')
+        ssim_end_str = str(args.ssim_weight_end).replace('.', '_')
         save_dir = os.path.join(THIS_DIR, 'trained_models',
-                                f'SNR_{args.snr}dB_{args.input_type}_ssim_decay_s{args.ssim_weight_start}_e{args.ssim_weight_end}')
+                                f'SNR_{args.snr}dB_{args.input_type}_ssim_decay_s{ssim_start_str}_e{ssim_end_str}')
     os.makedirs(save_dir, exist_ok=True)
     print(f'[Save] Model dir : {save_dir}\n')
 
@@ -768,8 +755,7 @@ def main():
             best_val_loss = avg_val_loss
             best_epoch    = epoch + 1
             if args.save_model:
-                export_model_to_onnx(model, os.path.join(save_dir, 'best.onnx'))
-                export_model_to_mat(model, os.path.join(save_dir, 'best_net.mat'))
+                export_model_to_onnx(model, os.path.join(save_dir, 'best_net.onnx'))
                 with open(os.path.join(save_dir, 'best_epoch.txt'), 'w') as fh:
                     fh.write(f'best_epoch       = {best_epoch}\n'
                              f'best_val_loss    = {best_val_loss:.8f}\n'
@@ -790,12 +776,10 @@ def main():
                              f'test_code_mode   = {args.test_code}\n'
                              f'data_path        = {mat_path}\n')
 
-    # ── Save final model ──────────────────────────────────────────────────────
     if args.save_model:
-        export_model_to_onnx(model, os.path.join(save_dir, 'final.onnx'))
-        export_model_to_mat(model, os.path.join(save_dir, 'final_net.mat'))
-        print(f'\n[Save] Final models -> {os.path.join(save_dir, "final.onnx")} & final_net.mat')
-        print(f'[Save] Best  models -> {os.path.join(save_dir, "best.onnx")} & best_net.mat'
+        export_model_to_onnx(model, os.path.join(save_dir, 'final_net.onnx'))
+        print(f'\n[Save] Final model -> {os.path.join(save_dir, "final_net.onnx")}')
+        print(f'[Save] Best  model -> {os.path.join(save_dir, "best_net.onnx")}'
               f'  (epoch {best_epoch})')
 
     # Save training history (.mat)
