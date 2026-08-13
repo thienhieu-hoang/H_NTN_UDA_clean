@@ -7,10 +7,32 @@ This script uses a dynamic scheduling approach for combining MSE and SSIM:
   - Start with a large SSIM weight to help the model learn coarse layout structures first.
   - Linearly decay the SSIM weight to a smaller value over the training epochs.
   - Let the MSE loss dominate in the later epochs to fine-tune the absolute coefficient values.
-
+====================================================================================
+Workflow: 
+- Input: 
+    - H_LI grid (132 x 14 grid) (after LS and Linear Interpolation) 
+    - H_LS sparse grid (only non-zero at the pilot positions, all non-pilot positions are 0) 
+- Process: 
+    -- If input is H_LI: Preprocessing: clipping the extrapolation elements (elements outside the pilot positions) with min and max 
+    value of the interpolated values (elements inside the pilot positions) to limit the error caused by the extrapolation.
+    - Apply min-max scaling (min-max of the input) to all input and corresponding label H_true (same scaling for all) to scale the values to [-1, 1]. 
+    - At the last layer, there is no activation function, so the values can be outside the range [-1, 1].
+    ------------------------------
+    Go to machine learning network 
+    ------------------------------
+    - De-scale the output with the min-max of the input.
+- Output: 
+    - H_hat_LS (132 x 14 grid) 
+====================================================================================
 Usage
 -----
-    python train_CNN_single_dataset_weight_decay.py --snr 10 --ssim-weight-start 0.5 --ssim-weight-end 0.05
+    python train_CNN_decaySSIM.py --snr 10 --ssim-weight-start 0.5 --ssim-weight-end 0.05
+
+    # Example for running a quick smoke test
+    python train_CNN_decaySSIM.py --snr 10 --test-code --save-model
+
+    # Example for linear interpolation input with extrapolation clipping
+    python train_CNN_decaySSIM.py --snr 10 --input-type li --clip-extrap --save-model
 """
 
 # ── Standard library ────────────────────────────────────────────────────────

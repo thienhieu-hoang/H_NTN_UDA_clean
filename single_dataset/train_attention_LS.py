@@ -1,8 +1,25 @@
 """
-HA02 Channel Estimation Model & Training Script (TensorFlow / Keras)
-===================================================================
-Train, evaluate, and test the HA02 hybrid model (Transformer Encoder + ResNet Decoder)
-on ONE SNR split of the OpenNTN dataset.
+Workflow: 
+- Input: 
+    - H_LS sequence (only values at the pilot positions)
+- Process: 
+    - Apply min-max scaling (min-max of the input) to all input and corresponding label H_true (same scaling for all) to scale the values to [-1, 1]. 
+    ----------------------------------------------------
+    Go through Attention + FFN blocks:
+        - Attention block computes relationships between the pilot values.
+        - Fully connected layer upsamples/expands the features to fill the unknown positions.
+        - Convolutional layers refine the reconstructed 132 x 14 grid.
+    ----------------------------------------------------
+    - De-scale the output with the min-max of the input.
+- Output: 
+    - H_hat_LS (132 x 14 grid) 
+====================================================================================
+Usage
+-----
+    python train_attention_LS.py --snr 10 --loss-type combined --ssim-weight-start 0.95 --ssim-weight-end 0.05 --save-model
+
+    # Example for running a quick smoke test
+    python train_attention_LS.py --snr 10 --test-code --save-model
 """
 
 # ── Standard library ────────────────────────────────────────────────────────
