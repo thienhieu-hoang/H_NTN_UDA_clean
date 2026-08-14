@@ -856,7 +856,7 @@ def main():
             prefix='train'
         )
 
-    print(f'[Done] Finished training and evaluation. Results saved in: {save_dir}/results')
+    print(f'[Done] Finished training and evaluation. Results saved in: {save_dir}')
 
 if __name__ == '__main__':
     main()

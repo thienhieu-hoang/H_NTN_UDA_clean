@@ -331,7 +331,7 @@ def export_model_to_onnx(model: tf.keras.Model, save_path: str,
     try:
         spec = (tf.TensorSpec(input_shape, tf.float32, name='input_channel'),)
         model_proto, _ = tf2onnx.convert.from_keras(
-            model, input_signature=spec, output_path=save_path)
+            model, input_signature=spec, inputs_as_nchw=['input_channel'], output_path=save_path)
         print(f'[ONNX Export] Saved ONNX model (architecture + weights) -> {save_path}')
     except Exception as e:
         print(f'[ONNX Export Warning] Failed to export ONNX model: {e}')
