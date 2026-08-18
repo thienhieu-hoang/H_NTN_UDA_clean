@@ -13,7 +13,7 @@ import onnxruntime as ort
 # ============================================================================
 MODEL_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\Clipped_DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps"
 DATASET_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\generatedChan\MATLAB\sampleWiseDoppler_wGeometry_A100_2p18e9_600km_70deg_30kHz"
-OUT_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LI"
+OUT_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LIGrid"
 MODEL_NAME = "best_net.onnx"
 CLIP_EXTRAP = "auto"       # "auto", "true", or "false" (auto detects if "clip" is in model_dir name)
 OUTPUT_KEY = "auto"        # "auto" saves variable as "H_infer", otherwise custom string
@@ -175,20 +175,57 @@ def compute_ssim_batch(H_pred, H_true):
         
     return float(np.mean(ssim_list))
 
-def save_inferred_to_mat(file_path, key, H_est, metrics_dict):
+def save_inferred_to_mat(dest_path, source_path, key, H_est, metrics_dict, num_samples=None):
     """
-    Saves only the inferred channel and metrics to a new MAT file.
+    Saves the entire contents of the original source_path MAT file combined
+    with the inferred channel and metrics to dest_path using scipy.io.savemat.
+    If num_samples is specified, slices all sample-dependent variables accordingly.
     """
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    save_dict = {
-        key: H_est,
-        'mmse': metrics_dict['mmse'],
-        'nmse': metrics_dict['nmse'],
-        'nmse_db': metrics_dict['nmse_db'],
-        'ssim': metrics_dict['ssim']
-    }
-    scipy.io.savemat(file_path, save_dict)
-    print(f"  [SUCCESS] Saved MAT file: {file_path}")
+    save_dict = {}
+    
+    # 1. Read all variables from the original HDF5 MAT file
+    with h5py.File(source_path, 'r') as f:
+        # Determine the original number of samples
+        N_orig = None
+        for k in ['H_perfect', 'H_perfect_ori', 'H_li', 'H_prac']:
+            if k in f:
+                N_orig = f[k].shape[0]
+                break
+        if N_orig is None:
+            # Fallback scan
+            for k in f.keys():
+                if hasattr(f[k], 'shape') and len(f[k].shape) >= 1:
+                    N_orig = f[k].shape[0]
+                    break
+        
+        # Load and slice each variable
+        for k in f.keys():
+            if k.startswith('#') or k.startswith('__'):
+                continue
+                
+            val = f[k][()]
+            
+            # Convert complex compound types to standard NumPy complex arrays
+            val = h5_to_complex(val)
+            
+            # Slice sample-dependent variables
+            if num_samples is not None and N_orig is not None:
+                if hasattr(val, 'shape') and len(val.shape) >= 1 and val.shape[0] == N_orig:
+                    val = val[:num_samples]
+                    
+            save_dict[k] = val
+
+    # 2. Append new inference variables and metrics
+    save_dict[key] = H_est
+    save_dict['mmse'] = metrics_dict['mmse']
+    save_dict['nmse'] = metrics_dict['nmse']
+    save_dict['nmse_db'] = metrics_dict['nmse_db']
+    save_dict['ssim'] = metrics_dict['ssim']
+    
+    # 3. Save to dest_path
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    scipy.io.savemat(dest_path, save_dict)
+    print(f"  [SUCCESS] Saved combined MAT file to: {dest_path}")
 
 def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_SAMPLES,
                   model_name=MODEL_NAME, clip_extrap=CLIP_EXTRAP, output_key=OUTPUT_KEY,
@@ -456,7 +493,7 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             'ssim': ssim
         })
 
-        # 9. Save only inferred channel and metrics to the new MAT file
+        # 9. Save inferred channel and metrics combined with original dataset variables
         if output_key == "auto":
             if "prac" in sub_lower:
                 out_key = "H_PRAC_infer"
@@ -473,7 +510,7 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             'nmse_db': nmse_db,
             'ssim': ssim
         }
-        save_inferred_to_mat(dest_mat_path, out_key, H_est_to_write, metrics_dict)
+        save_inferred_to_mat(dest_mat_path, source_mat_path, out_key, H_est_to_write, metrics_dict, num_samples=num_samples)
         matched_count += 1
 
     print("\n" + "="*80)
@@ -512,6 +549,25 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
 
 ## Inference Performance Summary
 {metrics_table}
+
+## Inferred MAT File Field Reference
+All variables are saved combined in **`inferredChannel.mat`** inside each target SNR subfolder.
+
+### Belong to Inference Results
+- `{out_key}`: The complex estimated/inferred channel matrix (shape: `(N, 132, 14)`).
+- `mmse`: Average Mean Squared Error compared to perfect label (scalar).
+- `nmse`: Average Normalized Mean Squared Error (scalar).
+- `nmse_db`: Average NMSE in dB (scalar).
+- `ssim`: Average Structural Similarity Index (scalar).
+
+### Belong to Original Dataset
+- `H_li`: Original linear-interpolated input channel (shape: `(N, 132, 14)`).
+- `H_ls_pilots`: Original sparse pilot values (shape: `(N, 88)`).
+- `H_prac`: Original practical estimated channel (shape: `(N, 132, 14)`).
+- `H_perfect` / `H_perfect_ori`: True channel labels (shape: `(N, 132, 14)`).
+- `pilot_rows` / `pilot_cols` / `pilot_indices`: Grid positions of the pilot symbols.
+- Sim geometry & propagation vectors: `r_ue_ECEF_all`, `ut_loc_ENU_all`, `slant_ranges`, `doppler_shifts_all`, `pl_dB_all`, `elevation_angles`, etc.
+- Constant system variables: `bs_loc_ENU`, `r_sat_ECEF`, `v_sat_ECEF`, `v_sat_ENU`, `satelliteDopplerShift_bc`, etc.
 
 ## Inference Details
 - **ONNX Model File**: {model_name}

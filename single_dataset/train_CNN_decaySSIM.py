@@ -35,14 +35,41 @@ Usage
     python train_CNN_decaySSIM.py --snr 10 --input-type li --clip-extrap --save-model
 """
 
-# ── Standard library ────────────────────────────────────────────────────────
+# -- Standard library --------------------------------------------------------
 import os
 import sys
 import time
 import argparse
 
-# ── Third-party ──────────────────────────────────────────────────────────────
+# -- Third-party --------------------------------------------------------------
 import numpy as np
+# NumPy 2.0 compatibility monkey-patch for older TensorFlow/Keras releases
+if not hasattr(np, 'complex_'):
+    np.complex_ = np.complex128
+if not hasattr(np, 'float_'):
+    np.float_ = np.float64
+if not hasattr(np, 'int_'):
+    np.int_ = np.int64
+if not hasattr(np, 'string_'):
+    np.string_ = np.bytes_
+if not hasattr(np, 'unicode_'):
+    np.unicode_ = np.str_
+
+# Register string representations in sctypeDict for np.dtype('string_')
+try:
+    if hasattr(np, 'sctypeDict'):
+        if 'string_' not in np.sctypeDict:
+            np.sctypeDict['string_'] = np.bytes_
+        if 'unicode_' not in np.sctypeDict:
+            np.sctypeDict['unicode_'] = np.str_
+    if hasattr(np, 'typeDict'):
+        if 'string_' not in np.typeDict:
+            np.typeDict['string_'] = np.bytes_
+        if 'unicode_' not in np.typeDict:
+            np.typeDict['unicode_'] = np.str_
+except Exception:
+    pass
+
 import scipy.io
 import tensorflow as tf
 from tensorflow.image import ssim as tf_ssim
@@ -74,9 +101,9 @@ DEFAULT_CLIP_EXTRAP = False
 # ============================================================================
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 # Path setup  (adds project root + JMMD/Domain_Adversarial helpers to sys.path)
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 def _setup_paths():
     try:
         this_dir = os.path.dirname(os.path.abspath(__file__))
@@ -99,9 +126,9 @@ from utils_GAN import CNNGenerator                         # JMMD/helper/utils_G
 from utils import minmaxScaler, deMinMax, complx2real      # Domain_Adversarial/helper/utils.py
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 # Data loading
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 DATA_FOLDER_NAME = 'DUR200ns_27G_600km_r15km_20to30mps'
 
 SNR_FOLDER_MAP = {
@@ -155,62 +182,152 @@ def get_data_path(data_root: str, snr: int, is_test_code: bool = False) -> str:
 
 def load_mat_data(mat_path: str, input_type: str):
     """
-    Load a .mat file and return numpy arrays with flexible key fallback.
+    Load a .mat file (supports both v7 and v7.3 HDF5 formats) and return numpy arrays.
     """
-    mat = scipy.io.loadmat(mat_path)
-    
-    # 1. H_perfect key resolution
-    if 'H_perfect' in mat and mat['H_perfect'].size > 0:
-        H_perfect = mat['H_perfect'].T
-    elif 'H_perfect_ori' in mat and mat['H_perfect_ori'].size > 0:
-        H_perfect = mat['H_perfect_ori'].T
+    try:
+        # Try loading with scipy.io.loadmat (v7 or older)
+        mat = scipy.io.loadmat(mat_path)
+        is_hdf5 = False
+    except NotImplementedError:
+        # Fallback to h5py (v7.3)
+        import h5py
+        is_hdf5 = True
+        
+    if is_hdf5:
+        # Helper to convert HDF5 real/imag struct to complex numpy array
+        def h5_to_complex(val):
+            if isinstance(val, np.ndarray) and val.dtype.names is not None:
+                if 'real' in val.dtype.names and 'imag' in val.dtype.names:
+                    return val['real'] + 1j * val['imag']
+            return val
+
+        with h5py.File(mat_path, 'r') as f:
+            # 1. H_perfect key resolution
+            perf_key = None
+            if 'H_perfect' in f:
+                perf_key = 'H_perfect'
+            elif 'H_perfect_ori' in f:
+                perf_key = 'H_perfect_ori'
+            else:
+                for k in f.keys():
+                    if not k.startswith('#') and len(f[k].shape) == 3:
+                        perf_key = k
+                        break
+            if perf_key is None:
+                raise KeyError("H_perfect channel key not found in HDF5 file.")
+                
+            H_perfect = h5_to_complex(f[perf_key][()])
+            if H_perfect.ndim == 3:
+                # Swapped dimensions in HDF5: (N, 14, 132) -> transpose to (N, 132, 14)
+                if H_perfect.shape[1] == 14 and H_perfect.shape[2] == 132:
+                    H_perfect = np.transpose(H_perfect, (0, 2, 1))
+            
+            N_samples, n_subc, n_symb = H_perfect.shape
+            
+            # Reconstruct dictionary of other variables for fallback
+            mat_dict = {}
+            for k in f.keys():
+                if k.startswith('#'):
+                    continue
+                mat_dict[k] = h5_to_complex(f[k][()])
+                # Transpose pilot coords if they are saved as column/row matrices
+                if k in ['pilot_rows', 'pilot_cols']:
+                    mat_dict[k] = np.squeeze(mat_dict[k])
+                # If they are other matrices of size (N, 14, 132), transpose them to (N, 132, 14)
+                elif isinstance(mat_dict[k], np.ndarray) and mat_dict[k].ndim == 3:
+                    if mat_dict[k].shape[1] == 14 and mat_dict[k].shape[2] == 132:
+                        mat_dict[k] = np.transpose(mat_dict[k], (0, 2, 1))
+
+            # 2. H_input key resolution
+            if input_type in ['ls', 'ls_ori']:
+                ls_key = 'H_ls_pilots_ori' if input_type == 'ls_ori' and 'H_ls_pilots_ori' in mat_dict else 'H_ls_pilots'
+                if ls_key not in mat_dict:
+                    for alt in ['H_ls_pilots', 'H_ls_pilots_ori', 'H_LS_comp', 'H_LS_full']:
+                        if alt in mat_dict:
+                            ls_key = alt
+                            break
+                            
+                if ls_key not in mat_dict or 'pilot_rows' not in mat_dict or 'pilot_cols' not in mat_dict:
+                    raise KeyError(f"Unable to reconstruct sparse LS grid. Required keys '{ls_key}', "
+                                   f"'pilot_rows', 'pilot_cols' not found in {mat_path}")
+                                   
+                H_pilots   = mat_dict[ls_key]
+                pilot_rows = mat_dict['pilot_rows'].astype(int) - 1
+                pilot_cols = mat_dict['pilot_cols'].astype(int) - 1
+                
+                if H_pilots.ndim == 2:
+                    if H_pilots.shape[0] != N_samples and H_pilots.shape[1] == N_samples:
+                        H_pilots = H_pilots.T
+                        
+                H_input = np.zeros((N_samples, n_subc, n_symb), dtype=np.complex64)
+                for i in range(N_samples):
+                    H_input[i, pilot_rows, pilot_cols] = H_pilots[i, :]
+                input_key = f"{ls_key} (sparse HDF5)"
+            else:
+                input_key_map = {'prac': 'H_prac', 'li': 'H_li', 'li_ori': 'H_li_ori'}
+                input_key = input_key_map.get(input_type, 'H_li')
+                if input_key not in mat_dict:
+                    for alt in [input_key, 'H_li', 'H_li_ori', 'H_prac']:
+                        if alt in mat_dict:
+                            input_key = alt
+                            break
+                H_input = mat_dict[input_key]
+                
     else:
-        for k in mat.keys():
-            if not k.startswith('__') and isinstance(mat[k], np.ndarray) and mat[k].ndim == 3:
-                H_perfect = mat[k].T
-                break
-
-    N_samples, n_subc, n_symb = H_perfect.shape
-
-    # 2. H_input key resolution
-    if input_type in ['ls', 'ls_ori']:
-        ls_key = 'H_ls_pilots_ori' if input_type == 'ls_ori' and 'H_ls_pilots_ori' in mat else 'H_ls_pilots'
-        if ls_key not in mat:
-            for alt in ['H_ls_pilots', 'H_ls_pilots_ori', 'H_LS_comp', 'H_LS_full']:
-                if alt in mat and mat[alt].size > 0:
-                    ls_key = alt
+        # 1. H_perfect key resolution
+        if 'H_perfect' in mat and mat['H_perfect'].size > 0:
+            H_perfect = mat['H_perfect'].T
+        elif 'H_perfect_ori' in mat and mat['H_perfect_ori'].size > 0:
+            H_perfect = mat['H_perfect_ori'].T
+        else:
+            for k in mat.keys():
+                if not k.startswith('__') and isinstance(mat[k], np.ndarray) and mat[k].ndim == 3:
+                    H_perfect = mat[k].T
                     break
 
-        if ls_key not in mat or 'pilot_rows' not in mat or 'pilot_cols' not in mat:
-            raise KeyError(f"Unable to reconstruct sparse LS grid. Required keys '{ls_key}', "
-                           f"'pilot_rows', 'pilot_cols' not found in {mat_path}")
+        N_samples, n_subc, n_symb = H_perfect.shape
 
-        H_pilots   = mat[ls_key]
-        pilot_rows = np.squeeze(mat['pilot_rows']).astype(int) - 1
-        pilot_cols = np.squeeze(mat['pilot_cols']).astype(int) - 1
+        # Create mat_dict to match
+        mat_dict = mat
 
-        if H_pilots.shape[0] != N_samples and H_pilots.shape[1] == N_samples:
-            H_pilots = H_pilots.T
+        # 2. H_input key resolution
+        if input_type in ['ls', 'ls_ori']:
+            ls_key = 'H_ls_pilots_ori' if input_type == 'ls_ori' and 'H_ls_pilots_ori' in mat else 'H_ls_pilots'
+            if ls_key not in mat:
+                for alt in ['H_ls_pilots', 'H_ls_pilots_ori', 'H_LS_comp', 'H_LS_full']:
+                    if alt in mat and mat[alt].size > 0:
+                        ls_key = alt
+                        break
 
-        H_input = np.zeros((N_samples, n_subc, n_symb), dtype=np.complex64)
-        for i in range(N_samples):
-            H_input[i, pilot_rows, pilot_cols] = H_pilots[i, :]
+            if ls_key not in mat or 'pilot_rows' not in mat or 'pilot_cols' not in mat:
+                raise KeyError(f"Unable to reconstruct sparse LS grid. Required keys '{ls_key}', "
+                               f"'pilot_rows', 'pilot_cols' not found in {mat_path}")
 
-        input_key = f"{ls_key} (sparse 2D grid)"
-    else:
-        input_key_map = {'prac': 'H_prac', 'li': 'H_li', 'li_ori': 'H_li_ori'}
-        input_key = input_key_map.get(input_type, 'H_li')
-        if input_key not in mat or mat[input_key].size == 0:
-            for alt in [input_key, 'H_li', 'H_li_ori', 'H_prac']:
-                if alt in mat and isinstance(mat[alt], np.ndarray) and mat[alt].size > 0:
-                    input_key = alt
-                    break
-        H_input = mat[input_key].T
+            H_pilots   = mat[ls_key]
+            pilot_rows = np.squeeze(mat['pilot_rows']).astype(int) - 1
+            pilot_cols = np.squeeze(mat['pilot_cols']).astype(int) - 1
+
+            if H_pilots.shape[0] != N_samples and H_pilots.shape[1] == N_samples:
+                H_pilots = H_pilots.T
+
+            H_input = np.zeros((N_samples, n_subc, n_symb), dtype=np.complex64)
+            for i in range(N_samples):
+                H_input[i, pilot_rows, pilot_cols] = H_pilots[i, :]
+            input_key = f"{ls_key} (sparse 2D grid)"
+        else:
+            input_key_map = {'prac': 'H_prac', 'li': 'H_li', 'li_ori': 'H_li_ori'}
+            input_key = input_key_map.get(input_type, 'H_li')
+            if input_key not in mat or mat[input_key].size == 0:
+                for alt in [input_key, 'H_li', 'H_li_ori', 'H_prac']:
+                    if alt in mat and isinstance(mat[alt], np.ndarray) and mat[alt].size > 0:
+                        input_key = alt
+                        break
+            H_input = mat[input_key].T
 
     H_perfect = H_perfect.astype(np.complex64)
     H_input   = H_input.astype(np.complex64)
     print(f'  Loaded H_perfect {H_perfect.shape}  |  H_input ({input_key}) {H_input.shape}')
-    return H_perfect, H_input, mat
+    return H_perfect, H_input, mat_dict
 
 
 def split_indices(N: int, train_frac: float, val_frac: float, seed: int = 1234):
@@ -222,9 +339,9 @@ def split_indices(N: int, train_frac: float, val_frac: float, seed: int = 1234):
     return idx[:n_train], idx[n_train:n_train + n_val], idx[n_train + n_val:]
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 # Helpers: structured dtype required by complx2real()
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 _STRUCT_DTYPE = np.dtype([('real', np.float32), ('imag', np.float32)])
 
 
@@ -236,9 +353,9 @@ def to_structured(H: np.ndarray) -> np.ndarray:
     return out
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 # Pre-processing
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray,
                      lower_range: int, clip_extrap: bool = False,
                      pilot_bounds: tuple = None):
@@ -275,9 +392,9 @@ def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray,
     return x_scaled, y_scaled, x_min, x_max
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 # Metrics
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 def compute_mmse(H_pred: np.ndarray, H_true: np.ndarray) -> float:
     """Mean-squared error between predicted and true complex channels."""
     return float(np.mean(np.abs(H_pred - H_true) ** 2))
@@ -314,9 +431,9 @@ def compute_ssim_batch(H_pred: np.ndarray, H_true: np.ndarray) -> float:
     return float(tf.reduce_mean(ssim_vals).numpy())
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 # ONNX Model Export (Architecture + Weights for MATLAB & Python)
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 def export_model_to_onnx(model: tf.keras.Model, save_path: str,
                          input_shape=(1, 132, 14, 2)):
     """Export Keras model to ONNX."""
@@ -492,9 +609,9 @@ def compute_combined_loss(y_true, y_pred, loss_fn, lower_range, ssim_weight):
     return combined, mse_val, ssim_loss
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 # Training step (compiled for speed)
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 @tf.function
 def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim_weight):
     with tf.GradientTape() as tape:
@@ -514,9 +631,9 @@ def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim
     return total_loss, mse_l, ssim_l
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 # Inference: produce corrected complex channel
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 def infer_channel(model: CNNGenerator,
                   H_perf: np.ndarray, H_in: np.ndarray,
                   batch_size: int, lower_range: int,
@@ -554,11 +671,11 @@ def infer_channel(model: CNNGenerator,
     return np.concatenate(out, axis=0)
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 # Main
-# ────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------
 def main():
-    # ── Argument parsing ────────────────────────────────────────────────────
+    # -- Argument parsing ----------------------------------------------------
     parser = argparse.ArgumentParser(
         description='Single-dataset CNN channel estimator (MSE + SSIM training loss decay schedule).',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -600,13 +717,13 @@ def main():
 
     args = parser.parse_args()
 
-    # ── Validate ────────────────────────────────────────────────────────────
+    # -- Validate ------------------------------------------------------------
     if args.train_frac + args.val_frac >= 1.0:
         parser.error('--train-frac + --val-frac must be < 1.0 (remainder is test).')
     if not (0.0 <= args.ssim_weight_start <= 1.0) or not (0.0 <= args.ssim_weight_end <= 1.0):
         parser.error('Both ssim-weight-start and ssim-weight-end must be between 0.0 and 1.0.')
 
-    # ── GPU setup ────────────────────────────────────────────────────────────
+    # -- GPU setup ------------------------------------------------------------
     if args.no_gpu:
         tf.config.set_visible_devices([], 'GPU')
         print('[GPU] Disabled by --no-gpu flag.')
@@ -619,7 +736,7 @@ def main():
         else:
             print('[GPU] None found – running on CPU.')
 
-    # ── Config banner ────────────────────────────────────────────────────────
+    # -- Config banner --------------------------------------------------------
     test_frac = 1.0 - args.train_frac - args.val_frac
     print('\n' + '=' * 58)
     print('  Single-Dataset CNN (Decaying MSE + SSIM Combination Loss)')
@@ -637,7 +754,7 @@ def main():
     print(f'  Clip extrapolation: {args.clip_extrap}')
     print('=' * 58 + '\n')
 
-    # ── Data loading & splitting ─────────────────────────────────────────────
+    # -- Data loading & splitting ---------------------------------------------
     mat_path = get_data_path(args.data_root, args.snr)
     print(f'[Data] {mat_path}')
     H_perfect, H_input, mat_dict = load_mat_data(mat_path, args.input_type)
@@ -655,7 +772,7 @@ def main():
     idx_train, idx_val, idx_test = split_indices(
         N, args.train_frac, args.val_frac, seed=1234)
 
-    # ── Test-code mode: shrink to a tiny subset ─────────────────────────────
+    # -- Test-code mode: shrink to a tiny subset -----------------------------
     if args.test_code:
         print('[test-code] Limiting dataset to a tiny subset for quick testing.')
         idx_train = idx_train[:TEST_CODE_N_TRAIN]
@@ -667,13 +784,13 @@ def main():
     print(f'[Data] N={N}  '
           f'train={len(idx_train)}  val={len(idx_val)}  test={len(idx_test)}')
 
-    # ── Model, optimiser, loss ───────────────────────────────────────────────
+    # -- Model, optimiser, loss -----------------------------------------------
     model     = CNNGenerator(n_blocks=args.n_blocks)
     optimizer = tf.keras.optimizers.Adam(learning_rate=args.lr,
                                          beta_1=0.5, beta_2=0.9)
     loss_fn   = tf.keras.losses.MeanSquaredError()
 
-    # ── Save directory ───────────────────────────────────────────────────────
+    # -- Save directory -------------------------------------------------------
     if args.save_dir:
         save_dir = os.path.abspath(args.save_dir)
     else:
@@ -684,7 +801,7 @@ def main():
     os.makedirs(save_dir, exist_ok=True)
     print(f'[Save] Model dir : {save_dir}\n')
 
-    # ── Training ──────────────────────────────────────────────────────────────
+    # -- Training --------------------------------------------------------------
     lower_range     = DEFAULT_LOWER_RANGE
     n_train_batches = len(idx_train) // args.batch_size
     n_val_batches   = len(idx_val)   // args.batch_size
@@ -777,7 +894,7 @@ def main():
         history['val_ssim'].append(avg_val_ssim)
         history['val_nmse'].append(avg_val_nmse)
 
-        # ── Print every 10 epochs (and first / last) ──
+        # -- Print every 10 epochs (and first / last) --
         if (epoch + 1) % 10 == 0 or epoch == 0 or epoch == args.epochs - 1:
             elapsed = time.perf_counter() - t_start
             print(f'Epoch [{epoch+1:>4d}/{args.epochs}]  '
@@ -786,7 +903,7 @@ def main():
                   f'ValNMSE={avg_val_nmse:.6f}  '
                   f't={elapsed:.1f}s')
 
-        # ── Save best model ──
+        # -- Save best model --
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             best_epoch    = epoch + 1
@@ -841,8 +958,8 @@ def main():
     # Save training loss curves plot PDF
     save_loss_plot_pdf(history, save_dir)
 
-    # ── Evaluation on VALIDATION set ─────────────────────────────────────────
-    print('\n' + '─' * 58)
+    # -- Evaluation on VALIDATION set -----------------------------------------
+    print('\n' + '-' * 58)
     print('[Eval] Validation set ...')
     H_pred_val = infer_channel(model,
                                H_perfect[idx_val], H_input[idx_val],
@@ -861,7 +978,7 @@ def main():
     ssim_in_val = compute_ssim_batch(H_input[idx_val], H_perfect[idx_val])
     nmse_in_val_db = 10.0 * np.log10(nmse_in_val + 1e-30)
 
-    # ── Evaluation on TEST set ────────────────────────────────────────────────
+    # -- Evaluation on TEST set ------------------------------------------------
     print('[Eval] Test set ...')
     H_pred_test = infer_channel(model,
                                 H_perfect[idx_test], H_input[idx_test],
@@ -880,7 +997,7 @@ def main():
     ssim_in_test = compute_ssim_batch(H_input[idx_test], H_perfect[idx_test])
     nmse_in_test_db = 10.0 * np.log10(nmse_in_test + 1e-30)
 
-    # ── Evaluation on TRAINING set ───────────────────────────────────────────
+    # -- Evaluation on TRAINING set -------------------------------------------
     print('[Eval] Training set ...')
     H_pred_train = infer_channel(model,
                                  H_perfect[idx_train], H_input[idx_train],
@@ -899,44 +1016,123 @@ def main():
     ssim_in_train = compute_ssim_batch(H_input[idx_train], H_perfect[idx_train])
     nmse_in_train_db = 10.0 * np.log10(nmse_in_train + 1e-30)
 
-    # ── Results table ─────────────────────────────────────────────────────────
-    hdr = f'  SNR={args.snr:+d} dB  |  input type: {args.input_type}  |  ssim_decay: {args.ssim_weight_start:.3f} -> {args.ssim_weight_end:.3f}'
-    print('\n' + '═' * 60)
-    print('  EVALUATION RESULTS (SSIM Weight Decay)')
-    print('═' * 60)
-    print(hdr)
-    print('─' * 60)
-    print(f'  {"Metric":<14} {"Raw "+args.input_type:<20} {"CNN output":<20}')
-    print('─' * 60)
-    print(f'  {"[TRAIN]":<14}')
-    print(f'  {"  MMSE":<14} {mmse_in_train:<20.6e} {mmse_train:<20.6e}')
-    print(f'  {"  NMSE":<14} {nmse_in_train:<20.6f} {nmse_train:<20.6f}')
-    print(f'  {"  NMSE(dB)":<14} {nmse_in_train_db:<20.2f} {nmse_train_db:<20.2f}')
-    print(f'  {"  SSIM":<14} {ssim_in_train:<20.6f} {ssim_train:<20.6f}')
-    print('─' * 60)
-    print(f'  {"[VAL]":<14}')
-    print(f'  {"  MMSE":<14} {mmse_in_val:<20.6e} {mmse_val:<20.6e}')
-    print(f'  {"  NMSE":<14} {nmse_in_val:<20.6f} {nmse_val:<20.6f}')
-    print(f'  {"  NMSE(dB)":<14} {nmse_in_val_db:<20.2f} {nmse_val_db:<20.2f}')
-    print(f'  {"  SSIM":<14} {ssim_in_val:<20.6f} {ssim_val:<20.6f}')
-    print('─' * 60)
-    print(f'  {"[TEST]":<14}')
-    print(f'  {"  MMSE":<14} {mmse_in_test:<20.6e} {mmse_test:<20.6e}')
-    print(f'  {"  NMSE":<14} {nmse_in_test:<20.6f} {nmse_test:<20.6f}')
-    print(f'  {"  NMSE(dB)":<14} {nmse_in_test_db:<20.2f} {nmse_test_db:<20.2f}')
-    print(f'  {"  SSIM":<14} {ssim_in_test:<20.6f} {ssim_test:<20.6f}')
-    print('═' * 60)
+    # -- LMMSE Baseline Estimation ---------------------------------------------
+    print('\n' + '-' * 58)
+    print('[LMMSE] Calculating LMMSE baseline estimated channel...')
+    has_lmmse = False
+    try:
+        ls_key = None
+        for k in ['H_ls_pilots', 'H_ls_pilots_ori', 'H_LS_comp', 'H_LS_full']:
+            if k in mat_dict and mat_dict[k].size > 0:
+                ls_key = k
+                break
+                
+        if ls_key is None or 'pilot_rows' not in mat_dict or 'pilot_cols' not in mat_dict:
+            raise KeyError("Required pilot keys not found in mat_dict for LMMSE.")
+            
+        H_ls_pilots = mat_dict[ls_key]
+        if H_ls_pilots.shape[0] != N and H_ls_pilots.shape[1] == N:
+            H_ls_pilots = H_ls_pilots.T
+            
+        pilot_rows = np.squeeze(mat_dict['pilot_rows']).astype(int) - 1
+        pilot_cols = np.squeeze(mat_dict['pilot_cols']).astype(int) - 1
+        
+        H_perfect_pilots = H_perfect[:, pilot_rows, pilot_cols]
+        H_perfect_vec = H_perfect.reshape(N, -1)
+        
+        # Complex covariance/correlation matrices
+        R_HP = np.matmul(H_perfect_vec.transpose(1, 0).conj(), H_perfect_pilots) / N
+        R_PP = np.matmul(H_perfect_pilots.transpose(1, 0).conj(), H_perfect_pilots) / N
+        
+        noise_var = float(np.mean(np.abs(H_ls_pilots - H_perfect_pilots) ** 2))
+        
+        C = R_PP + noise_var * np.eye(R_PP.shape[0], dtype=np.complex128)
+        inv_C = np.linalg.inv(C)
+        W = np.matmul(R_HP, inv_C)
+        
+        H_lmmse_train = np.matmul(H_ls_pilots[idx_train], W.T).reshape(-1, 132, 14)
+        H_lmmse_val = np.matmul(H_ls_pilots[idx_val], W.T).reshape(-1, 132, 14)
+        H_lmmse_test = np.matmul(H_ls_pilots[idx_test], W.T).reshape(-1, 132, 14)
+        
+        mmse_lmmse_train = compute_mmse(H_lmmse_train, H_perfect[idx_train])
+        nmse_lmmse_train = compute_nmse(H_lmmse_train, H_perfect[idx_train])
+        nmse_db_lmmse_train = 10.0 * np.log10(nmse_lmmse_train + 1e-30)
+        ssim_lmmse_train = compute_ssim_batch(H_lmmse_train, H_perfect[idx_train])
+        
+        mmse_lmmse_val = compute_mmse(H_lmmse_val, H_perfect[idx_val])
+        nmse_lmmse_val = compute_nmse(H_lmmse_val, H_perfect[idx_val])
+        nmse_db_lmmse_val = 10.0 * np.log10(nmse_lmmse_val + 1e-30)
+        ssim_lmmse_val = compute_ssim_batch(H_lmmse_val, H_perfect[idx_val])
+        
+        mmse_lmmse_test = compute_mmse(H_lmmse_test, H_perfect[idx_test])
+        nmse_lmmse_test = compute_nmse(H_lmmse_test, H_perfect[idx_test])
+        nmse_db_lmmse_test = 10.0 * np.log10(nmse_lmmse_test + 1e-30)
+        ssim_lmmse_test = compute_ssim_batch(H_lmmse_test, H_perfect[idx_test])
+        
+        has_lmmse = True
+        print("[LMMSE] LMMSE estimation completed successfully.")
+    except Exception as e:
+        print(f"[LMMSE Warning] Failed to compute LMMSE baseline: {e}")
 
-    # ── Save evaluation .mat ──────────────────────────────────────────────────
+    # -- Results table ---------------------------------------------------------
+    hdr = f'  SNR={args.snr:+d} dB  |  input type: {args.input_type}  |  ssim_decay: {args.ssim_weight_start:.3f} -> {args.ssim_weight_end:.3f}'
+    print('\n' + '=' * 80)
+    print('  EVALUATION RESULTS (SSIM Weight Decay)')
+    print('=' * 80)
+    print(hdr)
+    print('-' * 80)
+    if has_lmmse:
+        print(f'  {"Metric":<14} {"Raw "+args.input_type:<18} {"CNN output":<18} {"LMMSE Baseline":<18}')
+        print('-' * 80)
+        print(f'  {"[TRAIN]":<14}')
+        print(f'  {"  MMSE":<14} {mmse_in_train:<18.6e} {mmse_train:<18.6e} {mmse_lmmse_train:<18.6e}')
+        print(f'  {"  NMSE":<14} {nmse_in_train:<18.6f} {nmse_train:<18.6f} {nmse_lmmse_train:<18.6f}')
+        print(f'  {"  NMSE(dB)":<14} {nmse_in_train_db:<18.2f} {nmse_train_db:<18.2f} {nmse_db_lmmse_train:<18.2f}')
+        print(f'  {"  SSIM":<14} {ssim_in_train:<18.6f} {ssim_train:<18.6f} {ssim_lmmse_train:<18.6f}')
+        print('-' * 80)
+        print(f'  {"[VAL]":<14}')
+        print(f'  {"  MMSE":<14} {mmse_in_val:<18.6e} {mmse_val:<18.6e} {mmse_lmmse_val:<18.6e}')
+        print(f'  {"  NMSE":<14} {nmse_in_val:<18.6f} {nmse_val:<18.6f} {nmse_lmmse_val:<18.6f}')
+        print(f'  {"  NMSE(dB)":<14} {nmse_in_val_db:<18.2f} {nmse_val_db:<18.2f} {nmse_db_lmmse_val:<18.2f}')
+        print(f'  {"  SSIM":<14} {ssim_in_val:<18.6f} {ssim_val:<18.6f} {ssim_lmmse_val:<18.6f}')
+        print('-' * 80)
+        print(f'  {"[TEST]":<14}')
+        print(f'  {"  MMSE":<14} {mmse_in_test:<18.6e} {mmse_test:<18.6e} {mmse_lmmse_test:<18.6e}')
+        print(f'  {"  NMSE":<14} {nmse_in_test:<18.6f} {nmse_test:<18.6f} {nmse_lmmse_test:<18.6f}')
+        print(f'  {"  NMSE(dB)":<14} {nmse_in_test_db:<18.2f} {nmse_test_db:<18.2f} {nmse_db_lmmse_test:<18.2f}')
+        print(f'  {"  SSIM":<14} {ssim_in_test:<18.6f} {ssim_test:<18.6f} {ssim_lmmse_test:<18.6f}')
+    else:
+        print(f'  {"Metric":<14} {"Raw "+args.input_type:<20} {"CNN output":<20}')
+        print('-' * 60)
+        print(f'  {"[TRAIN]":<14}')
+        print(f'  {"  MMSE":<14} {mmse_in_train:<20.6e} {mmse_train:<20.6e}')
+        print(f'  {"  NMSE":<14} {nmse_in_train:<20.6f} {nmse_train:<20.6f}')
+        print(f'  {"  NMSE(dB)":<14} {nmse_in_train_db:<20.2f} {nmse_train_db:<20.2f}')
+        print(f'  {"  SSIM":<14} {ssim_in_train:<20.6f} {ssim_train:<20.6f}')
+        print('-' * 60)
+        print(f'  {"[VAL]":<14}')
+        print(f'  {"  MMSE":<14} {mmse_in_val:<20.6e} {mmse_val:<20.6e}')
+        print(f'  {"  NMSE":<14} {nmse_in_val:<20.6f} {nmse_val:<20.6f}')
+        print(f'  {"  NMSE(dB)":<14} {nmse_in_val_db:<20.2f} {nmse_val_db:<20.2f}')
+        print(f'  {"  SSIM":<14} {ssim_in_val:<20.6f} {ssim_val:<20.6f}')
+        print('-' * 60)
+        print(f'  {"[TEST]":<14}')
+        print(f'  {"  MMSE":<14} {mmse_in_test:<20.6e} {mmse_test:<20.6e}')
+        print(f'  {"  NMSE":<14} {nmse_in_test:<20.6f} {nmse_test:<20.6f}')
+        print(f'  {"  NMSE(dB)":<14} {nmse_in_test_db:<20.2f} {nmse_test_db:<20.2f}')
+        print(f'  {"  SSIM":<14} {ssim_in_test:<20.6f} {ssim_test:<20.6f}')
+    print('=' * 80)
+
+    # -- Save evaluation .mat --------------------------------------------------
     eval_path = os.path.join(save_dir, 'evaluation_results.mat')
-    scipy.io.savemat(eval_path, {
+    eval_dict = {
         # --- Train ---
         'mmse_train':      mmse_train,
         'nmse_train':      nmse_train,
         'nmse_train_db':   nmse_train_db,
         'ssim_train':      ssim_train,
         'mmse_input_train': mmse_in_train,
-        'nmse_input_train': mmse_in_train,
+        'nmse_input_train': nmse_in_train,
         'nmse_input_train_db': nmse_in_train_db,
         'ssim_input_train': ssim_in_train,
         # --- Validation ---
@@ -966,7 +1162,29 @@ def main():
         'best_epoch':      best_epoch,
         'ssim_weight_start': args.ssim_weight_start,
         'ssim_weight_end':   args.ssim_weight_end,
-    })
+    }
+
+    if has_lmmse:
+        eval_dict.update({
+            # --- LMMSE ---
+            'mmse_lmmse_train':      mmse_lmmse_train,
+            'nmse_lmmse_train':      nmse_lmmse_train,
+            'nmse_db_lmmse_train':   nmse_db_lmmse_train,
+            'ssim_lmmse_train':      ssim_lmmse_train,
+            
+            'mmse_lmmse_val':        mmse_lmmse_val,
+            'nmse_lmmse_val':        nmse_lmmse_val,
+            'nmse_db_lmmse_val':     nmse_db_lmmse_val,
+            'ssim_lmmse_val':        ssim_lmmse_val,
+            
+            'mmse_lmmse_test':       mmse_lmmse_test,
+            'nmse_lmmse_test':       nmse_lmmse_test,
+            'nmse_db_lmmse_test':    nmse_db_lmmse_test,
+            'ssim_lmmse_test':       ssim_lmmse_test,
+            
+        })
+
+    scipy.io.savemat(eval_path, eval_dict)
     print(f'[Save] Evaluation results -> {eval_path}')
 
     # Copy readme*.md from dataset folder to results directory
@@ -976,27 +1194,26 @@ def main():
         snr_folder_name = SNR_FOLDER_MAP.get(args.snr, f'{args.snr}dB')
         md_pattern = os.path.join(PROJECT_ROOT, 'generatedChan', 'OpenNTN', DATA_FOLDER_NAME, snr_folder_name, 'readme*.md')
         md_matches = glob.glob(md_pattern)
-        target_dir = save_dir
         if md_matches:
-            md_src = md_matches[0]
-            shutil.copy(md_src, target_dir)
-            print(f"[Save] Copied dataset readme ({os.path.basename(md_src)}) to: {target_dir}")
-        else:
-            print(f"[Save Warning] Metadata readme matching '{md_pattern}' not found.")
+            shutil.copy(md_matches[0], save_dir)
+            print(f"[Save] Copied dataset readme to: {save_dir}")
     except Exception as e:
         print(f"[Save Warning] Failed to copy metadata readme: {e}")
 
-    # ── Export PDF Heatmap Visualizations & Save Complex Grids for Test and Train Sample 1 ────
+    # -- Export PDF Heatmap Visualizations & Save Complex Grids for Test and Train Sample 1 ----
     if len(idx_test) > 0:
         sample_idx = idx_test[0]
         sample_mat_path = os.path.join(save_dir, 'channel_grids_test_sample1.mat')
-        scipy.io.savemat(sample_mat_path, {
+        sample_dict = {
             'H_perfect': H_perfect[sample_idx],
             f'H_{args.input_type}': H_input[sample_idx],
             f'H_{args.input_type}_cnn': H_pred_test[0],
             'snr': args.snr,
             'input_type': args.input_type
-        })
+        }
+        if has_lmmse:
+            sample_dict[f'H_{args.input_type}_lmmse'] = H_lmmse_test[0]
+        scipy.io.savemat(sample_mat_path, sample_dict)
         print(f'[Save] Complex channel grids (Test Sample 1) -> {sample_mat_path}')
 
         save_channel_plots_pdf(H_perfect[sample_idx],
@@ -1019,13 +1236,16 @@ def main():
         )[0]
 
         train_sample_mat_path = os.path.join(save_dir, 'channel_grids_train_sample1.mat')
-        scipy.io.savemat(train_sample_mat_path, {
+        train_sample_dict = {
             'H_perfect': H_perfect[train_sample_idx],
             f'H_{args.input_type}': H_input[train_sample_idx],
             f'H_{args.input_type}_cnn': H_pred_train_sample,
             'snr': args.snr,
             'input_type': args.input_type
-        })
+        }
+        if has_lmmse:
+            train_sample_dict[f'H_{args.input_type}_lmmse'] = H_lmmse_train[0]
+        scipy.io.savemat(train_sample_mat_path, train_sample_dict)
         print(f'[Save] Complex channel grids (Train Sample 1) -> {train_sample_mat_path}')
 
         save_channel_plots_pdf(H_perfect[train_sample_idx],
@@ -1039,38 +1259,51 @@ def main():
     try:
         with open(report_path, 'w') as fh:
             fh.write(
-                "============================================================\n"
-                "FINAL EVALUATION METRICS COMPARISON (TEST SET)\n"
-                "============================================================\n"
+                "========================================================================\n"
+                "FINAL EVALUATION METRICS COMPARISON\n"
+                "========================================================================\n"
                 f"SNR: {args.snr} dB | Input Type: {args.input_type} | SSIM Weight: {args.ssim_weight_start:.3f} -> {args.ssim_weight_end:.3f}\n\n"
-                f"  {'Metric':<14} {'Raw Input':<20} {'CNN Output':<20} {'Improvement?'}\n"
-                f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n"
-                f"  {'MMSE (MSE)':<14} {mmse_in_test:<20.6e} {mmse_test:<20.6e} {'Yes' if mmse_test < mmse_in_test else 'No'}\n"
-                f"  {'NMSE':<14} {nmse_in_test:<20.6f} {nmse_test:<20.6f} {'Yes' if nmse_test < nmse_in_test else 'No'}\n"
-                f"  {'NMSE (dB)':<14} {nmse_in_test_db:<20.2f} {nmse_test_db:<20.2f} {'Yes' if nmse_test_db < nmse_in_test_db else 'No'}\n"
-                f"  {'SSIM':<14} {ssim_in_test:<20.6f} {ssim_test:<20.6f} {'Yes' if ssim_test > ssim_in_test else 'No'}\n"
-                "============================================================\n\n"
-                "============================================================\n"
-                "FINAL EVALUATION METRICS COMPARISON (VALIDATION SET)\n"
-                "============================================================\n"
-                f"  {'Metric':<14} {'Raw Input':<20} {'CNN Output':<20} {'Improvement?'}\n"
-                f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n"
-                f"  {'MMSE (MSE)':<14} {mmse_in_val:<20.6e} {mmse_val:<20.6e} {'Yes' if mmse_val < mmse_in_val else 'No'}\n"
-                f"  {'NMSE':<14} {nmse_in_val:<20.6f} {nmse_val:<20.6f} {'Yes' if nmse_val < nmse_in_val else 'No'}\n"
-                f"  {'NMSE (dB)':<14} {nmse_in_val_db:<20.2f} {nmse_val_db:<20.2f} {'Yes' if nmse_val_db < nmse_in_val_db else 'No'}\n"
-                f"  {'SSIM':<14} {ssim_in_val:<20.6f} {ssim_val:<20.6f} {'Yes' if ssim_val > ssim_in_val else 'No'}\n"
-                "============================================================\n\n"
-                "============================================================\n"
-                "FINAL EVALUATION METRICS COMPARISON (TRAINING SET)\n"
-                "============================================================\n"
-                f"  {'Metric':<14} {'Raw Input':<20} {'CNN Output':<20} {'Improvement?'}\n"
-                f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n"
-                f"  {'MMSE (MSE)':<14} {mmse_in_train:<20.6e} {mmse_train:<20.6e} {'Yes' if mmse_train < mmse_in_train else 'No'}\n"
-                f"  {'NMSE':<14} {nmse_in_train:<20.6f} {nmse_train:<20.6f} {'Yes' if nmse_train < nmse_in_train else 'No'}\n"
-                f"  {'NMSE (dB)':<14} {nmse_in_train_db:<20.2f} {nmse_train_db:<20.2f} {'Yes' if nmse_train_db < nmse_in_train_db else 'No'}\n"
-                f"  {'SSIM':<14} {ssim_in_train:<20.6f} {ssim_train:<20.6f} {'Yes' if ssim_train > ssim_in_train else 'No'}\n"
-                "============================================================\n"
             )
+            
+            def write_set_block(set_name, raw_mmse, raw_nmse, raw_nmse_db, raw_ssim,
+                                cnn_mmse, cnn_nmse, cnn_nmse_db, ssim_cnn,
+                                lmmse_mmse=None, lmmse_nmse=None, lmmse_nmse_db=None, lmmse_ssim=None):
+                fh.write(f"========================================================================\n")
+                fh.write(f"FINAL EVALUATION METRICS COMPARISON ({set_name} SET)\n")
+                fh.write(f"========================================================================\n")
+                if lmmse_mmse is not None:
+                    fh.write(f"  {'Metric':<14} {'Raw Input':<16} {'CNN Output':<16} {'LMMSE Baseline':<16} {'Improvement?'}\n")
+                    fh.write(f"  {'-'*12:<14} {'-'*14:<16} {'-'*14:<16} {'-'*14:<16} {'-'*12}\n")
+                    fh.write(f"  {'MMSE (MSE)':<14} {raw_mmse:<16.6e} {cnn_mmse:<16.6e} {lmmse_mmse:<16.6e} {'Yes' if cnn_mmse < raw_mmse else 'No'}\n")
+                    fh.write(f"  {'NMSE':<14} {raw_nmse:<16.6f} {cnn_nmse:<16.6f} {lmmse_nmse:<16.6f} {'Yes' if cnn_mmse < raw_mmse else 'No'}\n")
+                    fh.write(f"  {'NMSE (dB)':<14} {raw_nmse_db:<16.2f} {cnn_nmse_db:<16.2f} {lmmse_nmse_db:<16.2f} {'Yes' if cnn_nmse_db < raw_nmse_db else 'No'}\n")
+                    fh.write(f"  {'SSIM':<14} {raw_ssim:<16.6f} {ssim_cnn:<16.6f} {lmmse_ssim:<16.6f} {'Yes' if ssim_cnn > raw_ssim else 'No'}\n")
+                else:
+                    fh.write(f"  {'Metric':<14} {'Raw Input':<20} {'CNN Output':<20} {'Improvement?'}\n")
+                    fh.write(f"  {'-'*12:<14} {'-'*18:<20} {'-'*18:<20} {'-'*12}\n")
+                    fh.write(f"  {'MMSE (MSE)':<14} {raw_mmse:<20.6e} {cnn_mmse:<20.6e} {'Yes' if cnn_mmse < raw_mmse else 'No'}\n")
+                    fh.write(f"  {'NMSE':<14} {raw_nmse:<20.6f} {cnn_nmse:<20.6f} {'Yes' if cnn_mmse < raw_mmse else 'No'}\n")
+                    fh.write(f"  {'NMSE (dB)':<14} {raw_nmse_db:<20.2f} {cnn_nmse_db:<20.2f} {'Yes' if cnn_nmse_db < raw_nmse_db else 'No'}\n")
+                    fh.write(f"  {'SSIM':<14} {raw_ssim:<20.6f} {ssim_cnn:<20.6f} {'Yes' if ssim_cnn > raw_ssim else 'No'}\n")
+                fh.write("========================================================================\n\n")
+
+            if has_lmmse:
+                write_set_block("TEST", mmse_in_test, nmse_in_test, nmse_in_test_db, ssim_in_test,
+                                mmse_test, nmse_test, nmse_test_db, ssim_test,
+                                mmse_lmmse_test, nmse_lmmse_test, nmse_db_lmmse_test, ssim_lmmse_test)
+                write_set_block("VALIDATION", mmse_in_val, nmse_in_val, nmse_in_val_db, ssim_in_val,
+                                mmse_val, nmse_val, nmse_val_db, ssim_val,
+                                mmse_lmmse_val, nmse_lmmse_val, nmse_db_lmmse_val, ssim_lmmse_val)
+                write_set_block("TRAINING", mmse_in_train, nmse_in_train, nmse_in_train_db, ssim_in_train,
+                                mmse_train, nmse_train, nmse_train_db, ssim_train,
+                                mmse_lmmse_train, nmse_lmmse_train, nmse_db_lmmse_train, ssim_lmmse_train)
+            else:
+                write_set_block("TEST", mmse_in_test, nmse_in_test, nmse_in_test_db, ssim_in_test,
+                                mmse_test, nmse_test, nmse_test_db, ssim_test)
+                write_set_block("VALIDATION", mmse_in_val, nmse_in_val, nmse_in_val_db, ssim_in_val,
+                                mmse_val, nmse_val, nmse_val_db, ssim_val)
+                write_set_block("TRAINING", mmse_in_train, nmse_in_train, nmse_in_train_db, ssim_in_train,
+                                mmse_train, nmse_train, nmse_train_db, ssim_train)
         print(f'[Save] Final epoch text report -> {report_path}')
     except Exception as e:
         print(f'[Save Warning] Failed to write final_epoch.txt report: {e}')

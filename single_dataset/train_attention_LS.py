@@ -39,6 +39,33 @@ import argparse
 
 # ── Third-party ──────────────────────────────────────────────────────────────
 import numpy as np
+# NumPy 2.0 compatibility monkey-patch for older TensorFlow/Keras releases
+if not hasattr(np, 'complex_'):
+    np.complex_ = np.complex128
+if not hasattr(np, 'float_'):
+    np.float_ = np.float64
+if not hasattr(np, 'int_'):
+    np.int_ = np.int64
+if not hasattr(np, 'string_'):
+    np.string_ = np.bytes_
+if not hasattr(np, 'unicode_'):
+    np.unicode_ = np.str_
+
+# Register string representations in sctypeDict for np.dtype('string_')
+try:
+    if hasattr(np, 'sctypeDict'):
+        if 'string_' not in np.sctypeDict:
+            np.sctypeDict['string_'] = np.bytes_
+        if 'unicode_' not in np.sctypeDict:
+            np.sctypeDict['unicode_'] = np.str_
+    if hasattr(np, 'typeDict'):
+        if 'string_' not in np.typeDict:
+            np.typeDict['string_'] = np.bytes_
+        if 'unicode_' not in np.typeDict:
+            np.typeDict['unicode_'] = np.str_
+except Exception:
+    pass
+
 import scipy.io
 import tensorflow as tf
 from tensorflow.image import ssim as tf_ssim
@@ -266,36 +293,95 @@ def get_data_path(data_root: str, snr: int, is_test_code: bool = False) -> str:
     raise FileNotFoundError(f"Could not find any .mat data files for SNR={snr} in any searched location.")
 
 def load_mat_data(mat_path: str, input_type: str):
-    mat = scipy.io.loadmat(mat_path)
-    H_perfect = mat['H_perfect'].T
-    
-    input_key_map = {
-        'prac': 'H_prac',
-        'li': 'H_li',
-        'li_ori': 'H_li_ori',
-        'ls': 'H_ls_pilots',
-        'ls_ori': 'H_ls_pilots_ori'
-    }
-    input_key = input_key_map.get(input_type, 'H_ls_pilots')
-    
-    if input_key not in mat or mat[input_key].size == 0:
-        for alt in [input_key, 'H_ls_pilots', 'H_ls_pilots_ori', 'H_li', 'H_li_ori', 'H_prac']:
-            if alt in mat and isinstance(mat[alt], np.ndarray) and mat[alt].size > 0:
-                input_key = alt
-                break
-                
-    H_input_pilots = mat[input_key].T
-    pilot_cols = mat['pilot_cols'].squeeze() - 1
-    pilot_rows = mat['pilot_rows'].squeeze() - 1
-    
-    if H_input_pilots.ndim == 3:
-        H_input_pilots = H_input_pilots[:, pilot_cols, pilot_rows]
+    try:
+        mat = scipy.io.loadmat(mat_path)
+        is_hdf5 = False
+    except NotImplementedError:
+        import h5py
+        is_hdf5 = True
+
+    if is_hdf5:
+        def h5_to_complex(val):
+            if isinstance(val, np.ndarray) and val.dtype.names is not None:
+                if 'real' in val.dtype.names and 'imag' in val.dtype.names:
+                    return val['real'] + 1j * val['imag']
+            return val
+
+        with h5py.File(mat_path, 'r') as f:
+            H_perfect = h5_to_complex(f['H_perfect'][()])
+            if H_perfect.ndim == 3:
+                if H_perfect.shape[1] == 14 and H_perfect.shape[2] == 132:
+                    H_perfect = np.transpose(H_perfect, (0, 2, 1))
+
+            # Reconstruct dictionary of other variables
+            mat_dict = {}
+            for k in f.keys():
+                if k.startswith('#'):
+                    continue
+                mat_dict[k] = h5_to_complex(f[k][()])
+                if k in ['pilot_rows', 'pilot_cols']:
+                    mat_dict[k] = np.squeeze(mat_dict[k])
+                elif isinstance(mat_dict[k], np.ndarray) and mat_dict[k].ndim == 3:
+                    if mat_dict[k].shape[1] == 14 and mat_dict[k].shape[2] == 132:
+                        mat_dict[k] = np.transpose(mat_dict[k], (0, 2, 1))
+
+            input_key_map = {
+                'prac': 'H_prac',
+                'li': 'H_li',
+                'li_ori': 'H_li_ori',
+                'ls': 'H_ls_pilots',
+                'ls_ori': 'H_ls_pilots_ori'
+            }
+            input_key = input_key_map.get(input_type, 'H_ls_pilots')
+            if input_key not in mat_dict:
+                for alt in [input_key, 'H_ls_pilots', 'H_ls_pilots_ori', 'H_li', 'H_li_ori', 'H_prac']:
+                    if alt in mat_dict:
+                        input_key = alt
+                        break
+
+            H_input_pilots = mat_dict[input_key]
+            pilot_cols = mat_dict['pilot_cols'].squeeze() - 1
+            pilot_rows = mat_dict['pilot_rows'].squeeze() - 1
+
+            if H_input_pilots.ndim == 3:
+                H_input_pilots = H_input_pilots[:, pilot_cols, pilot_rows]
+
+            H_li_benchmark_grid = mat_dict.get('H_li', mat_dict.get('H_li_ori', mat_dict.get('H_perfect')))
+            if H_li_benchmark_grid.ndim == 2:
+                H_li_benchmark_grid = H_perfect
+
+    else:
+        H_perfect = mat['H_perfect'].T
         
-    H_li_benchmark_grid = mat.get('H_li', mat.get('H_li_ori', mat['H_perfect'])).T
-    if H_li_benchmark_grid.ndim == 2:
-        H_li_benchmark_grid = H_perfect
+        input_key_map = {
+            'prac': 'H_prac',
+            'li': 'H_li',
+            'li_ori': 'H_li_ori',
+            'ls': 'H_ls_pilots',
+            'ls_ori': 'H_ls_pilots_ori'
+        }
+        input_key = input_key_map.get(input_type, 'H_ls_pilots')
         
-    return H_perfect, H_input_pilots, H_li_benchmark_grid, mat
+        if input_key not in mat or mat[input_key].size == 0:
+            for alt in [input_key, 'H_ls_pilots', 'H_ls_pilots_ori', 'H_li', 'H_li_ori', 'H_prac']:
+                if alt in mat and isinstance(mat[alt], np.ndarray) and mat[alt].size > 0:
+                    input_key = alt
+                    break
+                    
+        H_input_pilots = mat[input_key].T
+        pilot_cols = mat['pilot_cols'].squeeze() - 1
+        pilot_rows = mat['pilot_rows'].squeeze() - 1
+        
+        if H_input_pilots.ndim == 3:
+            H_input_pilots = H_input_pilots[:, pilot_cols, pilot_rows]
+            
+        H_li_benchmark_grid = mat.get('H_li', mat.get('H_li_ori', mat['H_perfect'])).T
+        if H_li_benchmark_grid.ndim == 2:
+            H_li_benchmark_grid = H_perfect
+            
+        mat_dict = mat
+
+    return H_perfect, H_input_pilots, H_li_benchmark_grid, mat_dict
 
 def split_indices(N: int, train_frac: float, val_frac: float, seed: int = 1234):
     rng = np.random.default_rng(seed)
@@ -774,40 +860,112 @@ def main():
     nmse_li_benchmark_test_db = compute_nmse_db(H_li_benchmark_grid[idx_test], H_perfect[idx_test])
     ssim_li_benchmark_test = compute_ssim_batch(H_li_benchmark_grid[idx_test], H_perfect[idx_test])
 
+    # ── LMMSE Baseline Estimation ─────────────────────────────────────────────
+    print('\n' + '-' * 58)
+    print('[LMMSE] Calculating LMMSE baseline estimated channel...')
+    has_lmmse = False
+    try:
+        H_perfect_pilots = H_perfect[:, pilot_rows, pilot_cols]
+        H_perfect_vec = H_perfect.reshape(N, -1)
+        
+        # Complex covariance/correlation matrices
+        R_HP = np.matmul(H_perfect_vec.transpose(1, 0).conj(), H_perfect_pilots) / N
+        R_PP = np.matmul(H_perfect_pilots.transpose(1, 0).conj(), H_perfect_pilots) / N
+        
+        noise_var = float(np.mean(np.abs(H_input_pilots - H_perfect_pilots) ** 2))
+        
+        C = R_PP + noise_var * np.eye(R_PP.shape[0], dtype=np.complex128)
+        inv_C = np.linalg.inv(C)
+        W = np.matmul(R_HP, inv_C)
+        
+        H_lmmse_train = np.matmul(H_input_pilots[idx_train], W.T).reshape(-1, 132, 14)
+        H_lmmse_val = np.matmul(H_input_pilots[idx_val], W.T).reshape(-1, 132, 14)
+        H_lmmse_test = np.matmul(H_input_pilots[idx_test], W.T).reshape(-1, 132, 14)
+        
+        mmse_lmmse_train = compute_mmse(H_lmmse_train, H_perfect[idx_train])
+        nmse_lmmse_train = compute_nmse(H_lmmse_train, H_perfect[idx_train])
+        nmse_db_lmmse_train = 10.0 * np.log10(nmse_lmmse_train + 1e-30)
+        ssim_lmmse_train = compute_ssim_batch(H_lmmse_train, H_perfect[idx_train])
+        
+        mmse_lmmse_val = compute_mmse(H_lmmse_val, H_perfect[idx_val])
+        nmse_lmmse_val = compute_nmse(H_lmmse_val, H_perfect[idx_val])
+        nmse_db_lmmse_val = 10.0 * np.log10(nmse_lmmse_val + 1e-30)
+        ssim_lmmse_val = compute_ssim_batch(H_lmmse_val, H_perfect[idx_val])
+        
+        mmse_lmmse_test = compute_mmse(H_lmmse_test, H_perfect[idx_test])
+        nmse_lmmse_test = compute_nmse(H_lmmse_test, H_perfect[idx_test])
+        nmse_db_lmmse_test = 10.0 * np.log10(nmse_lmmse_test + 1e-30)
+        ssim_lmmse_test = compute_ssim_batch(H_lmmse_test, H_perfect[idx_test])
+        
+        has_lmmse = True
+        print("[LMMSE] LMMSE estimation completed successfully.")
+    except Exception as e:
+        print(f"[LMMSE Warning] Failed to compute LMMSE baseline: {e}")
+
     # Save to final_epoch.txt
     txt_path = os.path.join(save_dir, 'final_epoch.txt')
     os.makedirs(os.path.join(save_dir), exist_ok=True)
-    with open(txt_path, 'w') as f:
-        f.write("=== FINAL EPOCH EVALUATION RESULTS ===\n")
-        f.write(f"SNR (dB):             {args.snr}\n")
-        f.write(f"Input Type:           {args.input_type}\n")
-        f.write(f"Loss Type:            {args.loss_type}\n")
-        f.write(f"Best Training Epoch:  {best_epoch}\n\n")
-        f.write("--- TRAIN SET METRICS ---\n")
-        f.write(f"LI Benchmark MMSE:    {mmse_li_benchmark_train:e}\n")
-        f.write(f"HA02 Output MMSE:     {mmse_train:e}\n")
-        f.write(f"LI Benchmark NMSE:    {nmse_li_benchmark_train:e} ({nmse_li_benchmark_train_db:.2f} dB)\n")
-        f.write(f"HA02 Output NMSE:     {nmse_train:e} ({nmse_train_db:.2f} dB)\n")
-        f.write(f"LI Benchmark SSIM:    {ssim_li_benchmark_train:.4f}\n")
-        f.write(f"HA02 Output SSIM:     {ssim_train:.4f}\n\n")
-        f.write("--- VALIDATION SET METRICS ---\n")
-        f.write(f"LI Benchmark MMSE:    {mmse_li_benchmark_val:e}\n")
-        f.write(f"HA02 Output MMSE:     {mmse_val:e}\n")
-        f.write(f"LI Benchmark NMSE:    {nmse_li_benchmark_val:e} ({nmse_li_benchmark_val_db:.2f} dB)\n")
-        f.write(f"HA02 Output NMSE:     {nmse_val:e} ({nmse_val_db:.2f} dB)\n")
-        f.write(f"LI Benchmark SSIM:    {ssim_li_benchmark_val:.4f}\n")
-        f.write(f"HA02 Output SSIM:     {ssim_val:.4f}\n\n")
-        f.write("--- TEST SET METRICS ---\n")
-        f.write(f"LI Benchmark MMSE:    {mmse_li_benchmark_test:e}\n")
-        f.write(f"HA02 Output MMSE:     {mmse_test:e}\n")
-        f.write(f"LI Benchmark NMSE:    {nmse_li_benchmark_test:e} ({nmse_li_benchmark_test_db:.2f} dB)\n")
-        f.write(f"HA02 Output NMSE:     {nmse_test:e} ({nmse_test_db:.2f} dB)\n")
-        f.write(f"LI Benchmark SSIM:    {ssim_li_benchmark_test:.4f}\n")
-        f.write(f"HA02 Output SSIM:     {ssim_test:.4f}\n")
+    try:
+        with open(txt_path, 'w') as f:
+            f.write("=== FINAL EPOCH EVALUATION RESULTS ===\n")
+            f.write(f"SNR (dB):             {args.snr}\n")
+            f.write(f"Input Type:           {args.input_type}\n")
+            f.write(f"Loss Type:            {args.loss_type}\n")
+            f.write(f"Best Training Epoch:  {best_epoch}\n\n")
+            
+            # --- TRAIN ---
+            f.write("--- TRAIN SET METRICS ---\n")
+            f.write(f"LI Benchmark MMSE:    {mmse_li_benchmark_train:e}\n")
+            f.write(f"HA02 Output MMSE:     {mmse_train:e}\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline MMSE:  {mmse_lmmse_train:e}\n")
+            f.write(f"LI Benchmark NMSE:    {nmse_li_benchmark_train:e} ({nmse_li_benchmark_train_db:.2f} dB)\n")
+            f.write(f"HA02 Output NMSE:     {nmse_train:e} ({nmse_train_db:.2f} dB)\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline NMSE:  {nmse_lmmse_train:e} ({nmse_db_lmmse_train:.2f} dB)\n")
+            f.write(f"LI Benchmark SSIM:    {ssim_li_benchmark_train:.4f}\n")
+            f.write(f"HA02 Output SSIM:     {ssim_train:.4f}\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline SSIM:  {ssim_lmmse_train:.4f}\n")
+            f.write("\n")
+            
+            # --- VALIDATION ---
+            f.write("--- VALIDATION SET METRICS ---\n")
+            f.write(f"LI Benchmark MMSE:    {mmse_li_benchmark_val:e}\n")
+            f.write(f"HA02 Output MMSE:     {mmse_val:e}\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline MMSE:  {mmse_lmmse_val:e}\n")
+            f.write(f"LI Benchmark NMSE:    {nmse_li_benchmark_val:e} ({nmse_li_benchmark_val_db:.2f} dB)\n")
+            f.write(f"HA02 Output NMSE:     {nmse_val:e} ({nmse_val_db:.2f} dB)\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline NMSE:  {nmse_lmmse_val:e} ({nmse_db_lmmse_val:.2f} dB)\n")
+            f.write(f"LI Benchmark SSIM:    {ssim_li_benchmark_val:.4f}\n")
+            f.write(f"HA02 Output SSIM:     {ssim_val:.4f}\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline SSIM:  {ssim_lmmse_val:.4f}\n")
+            f.write("\n")
+            
+            # --- TEST ---
+            f.write("--- TEST SET METRICS ---\n")
+            f.write(f"LI Benchmark MMSE:    {mmse_li_benchmark_test:e}\n")
+            f.write(f"HA02 Output MMSE:     {mmse_test:e}\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline MMSE:  {mmse_lmmse_test:e}\n")
+            f.write(f"LI Benchmark NMSE:    {nmse_li_benchmark_test:e} ({nmse_li_benchmark_test_db:.2f} dB)\n")
+            f.write(f"HA02 Output NMSE:     {nmse_test:e} ({nmse_test_db:.2f} dB)\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline NMSE:  {nmse_lmmse_test:e} ({nmse_db_lmmse_test:.2f} dB)\n")
+            f.write(f"LI Benchmark SSIM:    {ssim_li_benchmark_test:.4f}\n")
+            f.write(f"HA02 Output SSIM:     {ssim_test:.4f}\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline SSIM:  {ssim_lmmse_test:.4f}\n")
+        print(f"[Save] Final epoch text report -> {txt_path}")
+    except Exception as e:
+         print(f"[Save Warning] Failed to write final_epoch.txt report: {e}")
 
     # Save to evaluation_results.mat
     eval_path = os.path.join(save_dir, 'evaluation_results.mat')
-    scipy.io.savemat(eval_path, {
+    eval_dict = {
         'mmse_train': mmse_train, 'nmse_train': nmse_train, 'nmse_train_db': nmse_train_db, 'ssim_train': ssim_train,
         'mmse_li_benchmark_train': mmse_li_benchmark_train, 'nmse_li_benchmark_train': nmse_li_benchmark_train, 'nmse_li_benchmark_train_db': nmse_li_benchmark_train_db, 'ssim_li_benchmark_train': ssim_li_benchmark_train,
         'mmse_val': mmse_val, 'nmse_val': nmse_val, 'nmse_val_db': nmse_val_db, 'ssim_val': ssim_val,
@@ -815,7 +973,15 @@ def main():
         'mmse_test': mmse_test, 'nmse_test': nmse_test, 'nmse_test_db': nmse_test_db, 'ssim_test': ssim_test,
         'mmse_li_benchmark_test': mmse_li_benchmark_test, 'nmse_li_benchmark_test': nmse_li_benchmark_test, 'nmse_li_benchmark_test_db': nmse_li_benchmark_test_db, 'ssim_li_benchmark_test': ssim_li_benchmark_test,
         'snr': args.snr, 'input_type': args.input_type, 'best_epoch': best_epoch
-    })
+    }
+    if has_lmmse:
+        eval_dict.update({
+            'mmse_lmmse_train': mmse_lmmse_train, 'nmse_lmmse_train': nmse_lmmse_train, 'nmse_db_lmmse_train': nmse_db_lmmse_train, 'ssim_lmmse_train': ssim_lmmse_train,
+            'mmse_lmmse_val': mmse_lmmse_val, 'nmse_lmmse_val': nmse_lmmse_val, 'nmse_db_lmmse_val': nmse_db_lmmse_val, 'ssim_lmmse_val': ssim_lmmse_val,
+            'mmse_lmmse_test': mmse_lmmse_test, 'nmse_lmmse_test': nmse_lmmse_test, 'nmse_db_lmmse_test': nmse_db_lmmse_test, 'ssim_lmmse_test': ssim_lmmse_test,
+        })
+    scipy.io.savemat(eval_path, eval_dict)
+    print(f"[Save] Evaluation results -> {eval_path}")
 
     # Copy readme*.md from dataset folder to results directory
     try:
