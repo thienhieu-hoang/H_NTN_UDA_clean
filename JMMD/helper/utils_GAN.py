@@ -3775,6 +3775,139 @@ class CNNGenerator(tf.keras.Model):
         return output, features
     
     
+class SelfAttention2D(tf.keras.layers.Layer):
+    """
+    Self-attention layer for 2D feature maps (B, H, W, C).
+    Enables capturing long-range dependencies across subcarriers and symbols.
+    """
+    def __init__(self, channels, **kwargs):
+        super().__init__(**kwargs)
+        self.channels = channels
+        self.query_conv = tf.keras.layers.Conv2D(channels // 8, (1, 1), name="query_conv")
+        self.key_conv = tf.keras.layers.Conv2D(channels // 8, (1, 1), name="key_conv")
+        self.value_conv = tf.keras.layers.Conv2D(channels, (1, 1), name="value_conv")
+        self.gamma = None
+
+    def build(self, input_shape):
+        self.gamma = self.add_weight(
+            name="gamma",
+            shape=[1],
+            initializer="zeros",
+            trainable=True
+        )
+        super().build(input_shape)
+
+    def call(self, x):
+        B = tf.shape(x)[0]
+        H = tf.shape(x)[1]
+        W = tf.shape(x)[2]
+        
+        # Query projection: [B, H*W, C//8]
+        proj_query = self.query_conv(x)
+        proj_query = tf.reshape(proj_query, [B, H * W, -1])
+        
+        # Key projection: [B, H*W, C//8]
+        proj_key = self.key_conv(x)
+        proj_key = tf.reshape(proj_key, [B, H * W, -1])
+        
+        # Value projection: [B, H*W, C]
+        proj_value = self.value_conv(x)
+        proj_value = tf.reshape(proj_value, [B, H * W, -1])
+        
+        # Attention map: [B, H*W, H*W]
+        scores = tf.matmul(proj_query, proj_key, transpose_b=True)
+        attn = tf.nn.softmax(scores, axis=-1)
+        
+        # Weighted value: [B, H*W, C]
+        attn_out = tf.matmul(attn, proj_value)
+        attn_out = tf.reshape(attn_out, [B, H, W, self.channels])
+        
+        # Learnable residual skip connection
+        out = x + self.gamma * attn_out
+        return out
+
+
+class DnCNN_ResNet_Attention(tf.keras.Model):
+    """
+    DnCNN style ResNet architecture with Self-Attention in the middle of blocks.
+    """
+    def __init__(self, output_channels=2, n_subc=132, gen_l2=None, 
+                 n_blocks=6, base_filters=32, extract_layers=['block_2', 'block_3']):
+        super().__init__()
+        self.n_blocks = n_blocks
+        self.extract_layers = extract_layers
+        
+        # Input adaptation: 2 channels -> base_filters channels
+        self.input_conv = tf.keras.layers.Conv2D(
+            base_filters, (3, 3), padding='valid', activation='relu',
+            kernel_regularizer=tf.keras.regularizers.l2(gen_l2) if gen_l2 else None
+        )
+        
+        self.blocks = []
+        self.attention_layer = None
+        self.attention_after_block = n_blocks // 2  # Middle block
+        
+        for i in range(n_blocks):
+            # Pyramid channel progression strategy
+            if i == 0:
+                filters = 64
+                print(f"Block {i+1}: Using {filters} filters (increasing)")
+            elif i < n_blocks // 2:
+                filters = min(base_filters * (4 ** i), 1024)
+                print(f"Block {i+1}: Using {filters} filters (increasing)")
+            elif i == n_blocks - 1:
+                filters = 64
+                print(f"Block {i+1}: Using {filters} filters (decreasing)")
+            else:
+                mirror_index = n_blocks - i - 1
+                filters = min(base_filters * (4 ** mirror_index), 1024)
+                print(f"Block {i+1}: Using {filters} filters (decreasing)")
+            
+            block = SameShapeBlock(filters=filters, gen_l2=gen_l2)
+            self.blocks.append(block)
+            
+            # Setup attention layer in the middle
+            if i + 1 == self.attention_after_block:
+                self.attention_layer = SelfAttention2D(channels=filters)
+                print(f"Setup Self-Attention layer after Block {i+1} (filters={filters})")
+                
+        # Output adaptation: final_filters -> output_channels
+        self.output_conv = tf.keras.layers.Conv2D(
+            output_channels, (3, 3), padding='valid', activation='tanh',
+            kernel_regularizer=tf.keras.regularizers.l2(gen_l2) if gen_l2 else None
+        )
+        
+    def call(self, x, training=False, return_features=False):
+        # Input adaptation: (132, 14, 2) -> (132, 14, base_filters)
+        x = reflect_padding_2d(x, pad_h=1, pad_w=1)  # Reflect padding
+        out = self.input_conv(x)
+        
+        # Store intermediate features for extraction
+        block_outputs = {}
+        
+        # Process through SameShapeBlocks
+        for i, block in enumerate(self.blocks):
+            out = block(out, training=training)
+            
+            # Apply attention layer in the middle
+            if i + 1 == self.attention_after_block and self.attention_layer is not None:
+                out = self.attention_layer(out)
+                
+            block_outputs[f'block_{i+1}'] = out
+            
+        # Output adaptation: (132, 14, final_filters) -> (132, 14, 2)
+        out = reflect_padding_2d(out, pad_h=1, pad_w=1)  # Reflect padding
+        output = self.output_conv(out)
+        
+        # Feature extraction for domain adaptation
+        features = []
+        for layer_name in self.extract_layers:
+            if layer_name in block_outputs:
+                features.append(block_outputs[layer_name])
+                
+        return output, features
+
+
 # Residual Approach
 def train_step_wgan_gp_jmmd_residual(model, loader_H, loss_fn, optimizers, lower_range=-1, 
                                 save_features=False, nsymb=14, weights=None, linear_interp=False):

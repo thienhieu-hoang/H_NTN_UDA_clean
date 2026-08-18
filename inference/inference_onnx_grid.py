@@ -74,6 +74,43 @@ def de_min_max(x_normd, x_min, x_max, lower_range=-1):
         scale = x_max - x_min
         return x_normd * scale[:, np.newaxis, np.newaxis, :] + x_min[:, np.newaxis, np.newaxis, :]
 
+
+def match_original_shape(H_est, source_mat_path):
+    """
+    Finds H_perfect (or any reference 3D channel array) in the source file,
+    and transposes H_est (which has shape (N, 132, 14)) to match its layout exactly.
+    """
+    import h5py
+    with h5py.File(source_mat_path, 'r') as f:
+        ref_shape = None
+        for k in ['H_perfect', 'H_perfect_ori', 'H_li', 'H_prac']:
+            if k in f and len(f[k].shape) == 3:
+                ref_shape = f[k].shape
+                break
+        if ref_shape is None:
+            for k in f.keys():
+                if len(f[k].shape) == 3:
+                    ref_shape = f[k].shape
+                    break
+                    
+    if ref_shape is None:
+        return np.transpose(H_est, (0, 2, 1))
+        
+    # Case 1: reference shape is (N, 14, 132) -> transpose to (0, 2, 1)
+    if ref_shape[1] == 14 and ref_shape[2] == 132:
+        return np.transpose(H_est, (0, 2, 1))
+    # Case 2: reference shape is (N, 132, 14) -> keep as is
+    elif ref_shape[1] == 132 and ref_shape[2] == 14:
+        return H_est
+    # Case 3: reference shape is (14, 132, N) -> transpose to (2, 1, 0)
+    elif ref_shape[0] == 14 and ref_shape[1] == 132:
+        return np.transpose(H_est, (2, 0, 1))
+    # Case 4: reference shape is (132, 14, N) -> transpose to (1, 2, 0)
+    elif ref_shape[0] == 132 and ref_shape[1] == 14:
+        return np.transpose(H_est, (1, 2, 0))
+        
+    return np.transpose(H_est, (0, 2, 1))
+
 def clip_sample_np(sample, row_min, row_max, col_min, col_max):
     """
     Clips the full grid's real/imag parts to the min/max values found in the pilot region.
@@ -465,11 +502,8 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
         x_denormed = de_min_max(x_corr, x_min, x_max, lower_range=-1)
         H_est = x_denormed[..., 0] + 1j * x_denormed[..., 1]
         
-        # Transpose back if the original shape loaded from HDF5 had symbols first
-        if len(orig_shape) == 3 and orig_shape[1] == 14 and orig_shape[2] == 132:
-            H_est_to_write = np.transpose(H_est, (0, 2, 1))
-        else:
-            H_est_to_write = H_est
+        # Match original shape dynamically to ensure 100% same layout
+        H_est_to_write = match_original_shape(H_est, source_mat_path)
 
         # 8. Calculate average metrics
         mmse = compute_mmse(H_est, H_perf_complex)
