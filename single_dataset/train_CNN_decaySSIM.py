@@ -123,7 +123,7 @@ THIS_DIR, PROJECT_ROOT = _setup_paths()
 
 # Lazy import of JMMD utilities (requires project_root on sys.path)
 from utils_GAN import CNNGenerator                         # JMMD/helper/utils_GAN.py
-from utils import minmaxScaler, deMinMax, complx2real      # Domain_Adversarial/helper/utils.py
+from utils import minmaxScaler, deMinMax, complx2real, standardizeScaler, deStandardize      # Domain_Adversarial/helper/utils.py
 
 
 # ----------------------------------------------------------------------------
@@ -387,9 +387,9 @@ def to_structured(H: np.ndarray) -> np.ndarray:
 # ----------------------------------------------------------------------------
 def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray,
                      lower_range: int, clip_extrap: bool = False,
-                     pilot_bounds: tuple = None):
+                     pilot_bounds: tuple = None, standardize: bool = False):
     """
-    Convert complex batches to scaled real-valued TF tensors.
+    Convert complex batches to scaled or standardized real-valued TF tensors.
     """
     x = complx2real(to_structured(H_in_batch))
     y = complx2real(to_structured(H_perf_batch))
@@ -415,10 +415,14 @@ def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray,
         
         x = tf.stack([real_clipped, imag_clipped], axis=-1)
 
-    x_scaled, x_min, x_max = minmaxScaler(x, lower_range=lower_range)
-    y_scaled, _,    _      = minmaxScaler(y, min_pre=x_min, max_pre=x_max,
-                                          lower_range=lower_range)
-    return x_scaled, y_scaled, x_min, x_max
+    if standardize:
+        x_scaled, x_val1, x_val2 = standardizeScaler(x)
+        y_scaled, _,    _        = standardizeScaler(y, mean_pre=x_val1, std_pre=x_val2)
+    else:
+        x_scaled, x_val1, x_val2 = minmaxScaler(x, lower_range=lower_range)
+        y_scaled, _,    _        = minmaxScaler(y, min_pre=x_val1, max_pre=x_val2,
+                                              lower_range=lower_range)
+    return x_scaled, y_scaled, x_val1, x_val2
 
 
 # ----------------------------------------------------------------------------
@@ -620,7 +624,7 @@ def save_loss_plot_pdf(history: dict, save_dir: str):
         print(f'[PDF Export Warning] Failed to export loss history plots: {e}')
 
 
-def compute_combined_loss(y_true, y_pred, loss_fn, lower_range, ssim_weight):
+def compute_combined_loss(y_true, y_pred, loss_fn, lower_range, ssim_weight, standardize=False):
     """
     Computes a combined loss of MSE and SSIM:
       total_loss = (1 - ssim_weight) * MSE + ssim_weight * (1 - SSIM)
@@ -629,7 +633,12 @@ def compute_combined_loss(y_true, y_pred, loss_fn, lower_range, ssim_weight):
     mse_val = loss_fn(y_true, y_pred)
     
     # 2. SSIM Loss
-    max_val = tf.cast(2.0 if lower_range == -1 else 1.0, tf.float32)
+    if standardize:
+        max_val = tf.reduce_max(y_true) - tf.reduce_min(y_true)
+        max_val = tf.maximum(max_val, 1e-8)
+    else:
+        max_val = tf.cast(2.0 if lower_range == -1 else 1.0, tf.float32)
+        
     ssim_val = tf.image.ssim(y_true, y_pred, max_val=max_val)
     ssim_loss = tf.reduce_mean(1.0 - ssim_val)
     
@@ -642,13 +651,13 @@ def compute_combined_loss(y_true, y_pred, loss_fn, lower_range, ssim_weight):
 # Training step (compiled for speed)
 # ----------------------------------------------------------------------------
 @tf.function
-def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim_weight):
+def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim_weight, standardize):
     with tf.GradientTape() as tape:
         residual, _  = model(x_scaled, training=True)
         x_corrected  = x_scaled + residual
         
         # Compute combined loss components
-        combined_l, mse_l, ssim_l = compute_combined_loss(y_scaled, x_corrected, loss_fn, lower_range, ssim_weight)
+        combined_l, mse_l, ssim_l = compute_combined_loss(y_scaled, x_corrected, loss_fn, lower_range, ssim_weight, standardize)
         
         reg_loss     = 0.001 * tf.reduce_mean(tf.square(residual))
         total_loss   = combined_l + reg_loss
@@ -667,7 +676,8 @@ def infer_channel(model: CNNGenerator,
                   H_perf: np.ndarray, H_in: np.ndarray,
                   batch_size: int, lower_range: int,
                   clip_extrap: bool = False,
-                  pilot_bounds: tuple = None) -> np.ndarray:
+                  pilot_bounds: tuple = None,
+                  standardize: bool = False) -> np.ndarray:
     """
     Run the trained model on a full dataset and return the predicted
     complex channel of shape [N, n_subc, n_symb].
@@ -678,22 +688,30 @@ def infer_channel(model: CNNGenerator,
 
     for i in range(steps):
         sl   = slice(i * batch_size, (i + 1) * batch_size)
-        x_sc, _, x_min, x_max = preprocess_batch(H_perf[sl], H_in[sl], lower_range,
-                                                 clip_extrap=clip_extrap, pilot_bounds=pilot_bounds)
+        x_sc, _, x_val1, x_val2 = preprocess_batch(H_perf[sl], H_in[sl], lower_range,
+                                                   clip_extrap=clip_extrap, pilot_bounds=pilot_bounds,
+                                                   standardize=standardize)
         residual, _ = model(x_sc, training=False)
         x_corr      = x_sc + residual
-        x_denorm    = deMinMax(x_corr, x_min, x_max, lower_range=lower_range)
+        if standardize:
+            x_denorm = deStandardize(x_corr, x_val1, x_val2)
+        else:
+            x_denorm = deMinMax(x_corr, x_val1, x_val2, lower_range=lower_range)
         x_np        = x_denorm.numpy()
         out.append(x_np[..., 0] + 1j * x_np[..., 1])
 
     # Remainder batch
     if N % batch_size:
         sl   = slice(steps * batch_size, N)
-        x_sc, _, x_min, x_max = preprocess_batch(H_perf[sl], H_in[sl], lower_range,
-                                                 clip_extrap=clip_extrap, pilot_bounds=pilot_bounds)
+        x_sc, _, x_val1, x_val2 = preprocess_batch(H_perf[sl], H_in[sl], lower_range,
+                                                   clip_extrap=clip_extrap, pilot_bounds=pilot_bounds,
+                                                   standardize=standardize)
         residual, _ = model(x_sc, training=False)
         x_corr      = x_sc + residual
-        x_denorm    = deMinMax(x_corr, x_min, x_max, lower_range=lower_range)
+        if standardize:
+            x_denorm = deStandardize(x_corr, x_val1, x_val2)
+        else:
+            x_denorm = deMinMax(x_corr, x_val1, x_val2, lower_range=lower_range)
         x_np        = x_denorm.numpy()
         out.append(x_np[..., 0] + 1j * x_np[..., 1])
 
@@ -743,6 +761,8 @@ def main():
                         help='Initial importance weight for SSIM loss at epoch 0.')
     parser.add_argument('--ssim-weight-end', type=float, default=DEFAULT_SSIM_END,
                         help='Final importance weight for SSIM loss at the last epoch.')
+    parser.add_argument('--standardize', action='store_true',
+                        help='Use sample-wise standardization (mean/var) instead of min-max scaling')
 
     args = parser.parse_args()
 
@@ -825,8 +845,9 @@ def main():
     else:
         ssim_start_str = str(args.ssim_weight_start).replace('.', '_')
         ssim_end_str = str(args.ssim_weight_end).replace('.', '_')
+        suffix = 'standardize' if args.standardize else 'ssim_decay'
         save_dir = os.path.join(THIS_DIR, 'trained_models',
-                                f'SNR_{args.snr}dB_{args.input_type}_ssim_decay_s{ssim_start_str}_e{ssim_end_str}')
+                                f'SNR_{args.snr}dB_{args.input_type}_{suffix}_s{ssim_start_str}_e{ssim_end_str}')
     os.makedirs(save_dir, exist_ok=True)
     print(f'[Save] Model dir : {save_dir}\n')
 
@@ -851,6 +872,9 @@ def main():
     print(f'[Train] {args.epochs} epochs  |  {n_train_batches} batches/epoch\n')
     t_start = time.perf_counter()
 
+    # Convert standardize flag to TF constant
+    standardize_tf = tf.constant(args.standardize, dtype=tf.bool)
+
     for epoch in range(args.epochs):
         idx_e = np.random.default_rng(epoch).permutation(idx_train)
 
@@ -873,9 +897,9 @@ def main():
             batch_idx = idx_e[b * args.batch_size:(b + 1) * args.batch_size]
             h_p = H_perfect[batch_idx]
             h_i = H_input[batch_idx]
-            x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range, clip_extrap=args.clip_extrap, pilot_bounds=pilot_bounds)
+            x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range, clip_extrap=args.clip_extrap, pilot_bounds=pilot_bounds, standardize=args.standardize)
             
-            total_l, mse_l, ssim_l = _train_step(model, x_sc, y_sc, optimizer, loss_fn, lower_range, ssim_weight_tf)
+            total_l, mse_l, ssim_l = _train_step(model, x_sc, y_sc, optimizer, loss_fn, lower_range, ssim_weight_tf, standardize_tf)
             ep_train_loss += total_l.numpy()
             ep_train_mse  += mse_l.numpy()
             ep_train_ssim += ssim_l.numpy()
@@ -893,12 +917,12 @@ def main():
             batch_idx = idx_val[b * args.batch_size:(b + 1) * args.batch_size]
             h_p = H_perfect[batch_idx]
             h_i = H_input[batch_idx]
-            x_sc, y_sc, x_min, x_max = preprocess_batch(h_p, h_i, lower_range, clip_extrap=args.clip_extrap, pilot_bounds=pilot_bounds)
+            x_sc, y_sc, x_val1, x_val2 = preprocess_batch(h_p, h_i, lower_range, clip_extrap=args.clip_extrap, pilot_bounds=pilot_bounds, standardize=args.standardize)
             residual, _ = model(x_sc, training=False)
             x_corr      = x_sc + residual
             
             # Use current epoch's SSIM weight for validation loss to match training
-            comb_l, mse_l, ssim_l = compute_combined_loss(y_sc, x_corr, loss_fn, lower_range, ssim_weight_tf)
+            comb_l, mse_l, ssim_l = compute_combined_loss(y_sc, x_corr, loss_fn, lower_range, ssim_weight_tf, standardize=args.standardize)
             ep_val_loss += comb_l.numpy()
             ep_val_mse  += mse_l.numpy()
             ep_val_ssim += ssim_l.numpy()
@@ -943,6 +967,7 @@ def main():
                              f'best_val_loss    = {best_val_loss:.8f}\n'
                              f'snr              = {args.snr} dB\n'
                              f'input_type       = {args.input_type}\n'
+                             f'standardize      = {args.standardize}\n'
                              f'total_epochs     = {args.epochs}\n'
                              f'batch_size       = {args.batch_size}\n'
                              f'learning_rate    = {args.lr}\n'
@@ -977,6 +1002,7 @@ def main():
         'ssim_weight_history': np.array(history['ssim_weight_history']),
         'snr':        args.snr,
         'input_type': args.input_type,
+        'standardize': args.standardize,
         'n_epochs':   args.epochs,
         'best_epoch': best_epoch,
         'ssim_weight_start': args.ssim_weight_start,
@@ -994,7 +1020,8 @@ def main():
                                H_perfect[idx_val], H_input[idx_val],
                                args.batch_size, lower_range,
                                clip_extrap=args.clip_extrap,
-                               pilot_bounds=pilot_bounds)
+                               pilot_bounds=pilot_bounds,
+                               standardize=args.standardize)
 
     mmse_val = compute_mmse(H_pred_val, H_perfect[idx_val])
     nmse_val = compute_nmse(H_pred_val, H_perfect[idx_val])
@@ -1013,7 +1040,8 @@ def main():
                                 H_perfect[idx_test], H_input[idx_test],
                                 args.batch_size, lower_range,
                                 clip_extrap=args.clip_extrap,
-                                pilot_bounds=pilot_bounds)
+                                pilot_bounds=pilot_bounds,
+                                standardize=args.standardize)
 
     mmse_test = compute_mmse(H_pred_test, H_perfect[idx_test])
     nmse_test = compute_nmse(H_pred_test, H_perfect[idx_test])
@@ -1032,7 +1060,8 @@ def main():
                                  H_perfect[idx_train], H_input[idx_train],
                                  args.batch_size, lower_range,
                                  clip_extrap=args.clip_extrap,
-                                 pilot_bounds=pilot_bounds)
+                                 pilot_bounds=pilot_bounds,
+                                 standardize=args.standardize)
 
     mmse_train = compute_mmse(H_pred_train, H_perfect[idx_train])
     nmse_train = compute_nmse(H_pred_train, H_perfect[idx_train])

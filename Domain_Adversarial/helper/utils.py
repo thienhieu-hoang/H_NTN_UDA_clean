@@ -144,6 +144,44 @@ def deMinMax(x_normd, x_min, x_max, lower_range=-1):
                 
     return  x_denormed
 
+def standardizeScaler(x, mean_pre=None, std_pre=None):
+    """
+    Standardize tf.Tensor sample-wise along grid dimensions separately for real and imaginary parts.
+    """
+    x_shape = tf.shape(x)
+    N = x_shape[0]
+    x_reshaped = tf.reshape(x, [N, -1, 2])
+    
+    if mean_pre is not None and std_pre is not None:
+        x_mean = mean_pre
+        x_std = std_pre
+    else:
+        x_mean = tf.reduce_mean(x_reshaped, axis=1)  # [N, 2]
+        x_mean_sq = tf.reduce_mean(tf.square(x_reshaped), axis=1)
+        x_var = x_mean_sq - tf.square(x_mean)
+        x_std = tf.sqrt(tf.clip_by_value(x_var, 1e-30, tf.float32.max))  # [N, 2]
+        
+    x_mean_broadcast = tf.reshape(x_mean, [N, 1, 1, 2])
+    x_std_broadcast = tf.reshape(x_std, [N, 1, 1, 2])
+    
+    x_scaled = (x - x_mean_broadcast) / x_std_broadcast
+    return x_scaled, x_mean, x_std
+
+def deStandardize(x_normd, x_mean, x_std):
+    """
+    Perform inverse sample-wise standardization.
+    """
+    x_normd = tf.convert_to_tensor(x_normd, dtype=tf.float32)
+    x_mean = tf.convert_to_tensor(x_mean, dtype=tf.float32)
+    x_std = tf.convert_to_tensor(x_std, dtype=tf.float32)
+    
+    N = tf.shape(x_normd)[0]
+    x_mean_broadcast = tf.reshape(x_mean, [N, 1, 1, 2])
+    x_std_broadcast = tf.reshape(x_std, [N, 1, 1, 2])
+    
+    x_denormed = x_normd * x_std_broadcast + x_mean_broadcast
+    return x_denormed
+
 def complx2real(H_struct):
     """
     Convert structured complex ndarray of shape [N, S, T] with dtype [('real', float), ('imag', float)]
@@ -256,3 +294,39 @@ def calNMSE(x, target, return_mse=False):
 #         x_denormd = x_normd
         
 #     return x_denormd
+
+def standardizeScaler_ha02(x, y, mean_pre=None, std_pre=None):
+    """
+    Standardize tf.Tensor sample-wise along grid dimensions separately for real and imaginary parts
+    tailored to train_attention_LS.py input format (x: sequence shape [B, L, 2], y: grid shape [B, H, W, 2]).
+    """
+    B = tf.shape(x)[0]
+    
+    if mean_pre is not None and std_pre is not None:
+        x_mean = mean_pre
+        x_std = std_pre
+    else:
+        x_mean = tf.reduce_mean(x, axis=1)  # [B, 2]
+        x_mean_sq = tf.reduce_mean(tf.square(x), axis=1)
+        x_var = x_mean_sq - tf.square(x_mean)
+        x_std = tf.sqrt(tf.clip_by_value(x_var, 1e-30, tf.float32.max))  # [B, 2]
+        
+    x_mean_bc_x = tf.reshape(x_mean, [B, 1, 2])
+    scale_bc_x = tf.reshape(x_std, [B, 1, 2])
+    x_scaled = (x - x_mean_bc_x) / scale_bc_x
+    
+    x_mean_bc_y = tf.reshape(x_mean, [B, 1, 1, 2])
+    scale_bc_y = tf.reshape(x_std, [B, 1, 1, 2])
+    y_scaled = (y - x_mean_bc_y) / scale_bc_y
+    
+    return x_scaled, y_scaled, x_mean, x_std
+
+def deStandardize_ha02(y_scaled, x_mean, x_std):
+    """
+    Perform inverse sample-wise standardization for y_scaled.
+    """
+    B = tf.shape(y_scaled)[0]
+    scale_bc = tf.reshape(x_std, [B, 1, 1, 2])
+    shift_bc = tf.reshape(x_mean, [B, 1, 1, 2])
+    y_denormed = y_scaled * scale_bc + shift_bc
+    return y_denormed

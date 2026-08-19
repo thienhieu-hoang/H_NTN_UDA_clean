@@ -110,6 +110,9 @@ def _setup_paths():
 
 THIS_DIR, PROJECT_ROOT = _setup_paths()
 
+# Import standardization helpers
+from utils import standardizeScaler_ha02, deStandardize_ha02
+
 # =============================================================================
 # 1. TRANSFORMER ENCODER BLOCK (Attention Pre-processor)
 # =============================================================================
@@ -456,13 +459,16 @@ def deMinMax_ha02(y_scaled, x_min, x_max, lower_range=-1):
     y_denormed = y_norm * scale_bc + shift_bc
     return y_denormed
 
-def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray, lower_range: int):
+def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray, lower_range: int, standardize: bool = False):
     y = complx2real(H_perf_batch)
     x = complx2real(H_in_batch)
     x = tf.cast(x, tf.float32)
     y = tf.cast(y, tf.float32)
-    x_sc, y_sc, x_min, x_max = minmaxScaler_ha02(x, y, lower_range)
-    return x_sc, y_sc, x_min, x_max
+    if standardize:
+        x_sc, y_sc, x_val1, x_val2 = standardizeScaler_ha02(x, y)
+    else:
+        x_sc, y_sc, x_val1, x_val2 = minmaxScaler_ha02(x, y, lower_range)
+    return x_sc, y_sc, x_val1, x_val2
 
 def compute_mmse(H_pred: np.ndarray, H_true: np.ndarray) -> float:
     return float(np.mean(np.abs(H_pred - H_true)**2))
@@ -592,7 +598,7 @@ def save_loss_plot_pdf(history: dict, save_dir: str):
         print(f'[PDF Export Warning] Failed to export loss history plots: {e}')
 
 @tf.function
-def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim_weight, use_huber=False, huber_delta=1.0):
+def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim_weight, use_huber=False, huber_delta=1.0, standardize=False):
     x_scaled = tf.cast(x_scaled, tf.float32)
     y_scaled = tf.cast(y_scaled, tf.float32)
     with tf.GradientTape() as tape:
@@ -609,7 +615,11 @@ def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim
             ssim_loss = tf.constant(0.0)
         else:
             mse_loss = loss_fn(y_scaled, y_pred)
-            max_val = tf.cast(2.0 if lower_range == -1 else 1.0, tf.float32)
+            if standardize:
+                max_val = tf.reduce_max(y_scaled) - tf.reduce_min(y_scaled)
+                max_val = tf.maximum(max_val, 1e-8)
+            else:
+                max_val = tf.cast(2.0 if lower_range == -1 else 1.0, tf.float32)
             ssim_val = tf_ssim(y_scaled, y_pred, max_val=max_val)
             ssim_loss = tf.reduce_mean(1.0 - ssim_val)
             total_loss = (1.0 - ssim_weight) * mse_loss + ssim_weight * ssim_loss
@@ -618,7 +628,7 @@ def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim
     optimizer.apply_gradients(zip(gradients, model.trainable_variables))
     return total_loss, mse_loss, ssim_loss
 
-def infer_channel(model, H_perfect_data, H_input_pilots, batch_size=16, lower_range=-1):
+def infer_channel(model, H_perfect_data, H_input_pilots, batch_size=16, lower_range=-1, standardize=False):
     N_samples = H_perfect_data.shape[0]
     H_pred_all = []
     
@@ -627,9 +637,12 @@ def infer_channel(model, H_perfect_data, H_input_pilots, batch_size=16, lower_ra
         h_p = H_perfect_data[batch_idx]
         h_i = H_input_pilots[batch_idx]
         
-        x_sc, y_sc, x_min, x_max = preprocess_batch(h_p, h_i, lower_range)
+        x_sc, y_sc, x_val1, x_val2 = preprocess_batch(h_p, h_i, lower_range, standardize=standardize)
         y_pred_sc = model(x_sc, training=False)
-        y_pred = deMinMax_ha02(y_pred_sc, x_min, x_max, lower_range)
+        if standardize:
+            y_pred = deStandardize_ha02(y_pred_sc, x_val1, x_val2)
+        else:
+            y_pred = deMinMax_ha02(y_pred_sc, x_val1, x_val2, lower_range)
         
         y_pred_np = y_pred.numpy()
         H_pred_complex = y_pred_np[..., 0] + 1j * y_pred_np[..., 1]
@@ -689,6 +702,8 @@ def main():
                         help='Huber loss transition delta')
     parser.add_argument('--ssim-weight-start', type=float, default=DEFAULT_SSIM_START)
     parser.add_argument('--ssim-weight-end', type=float, default=DEFAULT_SSIM_END)
+    parser.add_argument('--standardize', action='store_true',
+                        help='Use sample-wise standardization (mean/var) instead of min-max scaling')
 
     args = parser.parse_args()
 
@@ -730,7 +745,8 @@ def main():
         if args.loss_type == 'combined':
             ssim_start_str = str(args.ssim_weight_start).replace('.', '_')
             ssim_end_str = str(args.ssim_weight_end).replace('.', '_')
-            loss_name = f"ssim_decay_s{ssim_start_str}_e{ssim_end_str}"
+            suffix = 'standardize' if args.standardize else 'ssim_decay'
+            loss_name = f"{suffix}_s{ssim_start_str}_e{ssim_end_str}"
         else:
             huber_delta_str = str(args.huber_delta).replace('.', '_')
             loss_name = f"huber_d{huber_delta_str}"
@@ -766,6 +782,9 @@ def main():
         history['ssim_weight_history'].append(epoch_ssim_weight)
         ssim_weight_tf = tf.constant(epoch_ssim_weight, dtype=tf.float32)
 
+        # Convert standardize flag to TF constant
+        standardize_tf = tf.constant(args.standardize, dtype=tf.bool)
+
         # Train loop
         ep_train_loss = 0.0
         ep_train_mse  = 0.0
@@ -774,11 +793,11 @@ def main():
             batch_idx = idx_e[b * args.batch_size:(b + 1) * args.batch_size]
             h_p = H_perfect[batch_idx]
             h_i = H_input_pilots[batch_idx]
-            x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range)
+            x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range, standardize=args.standardize)
             
             total_l, mse_l, ssim_l = _train_step(
                 model, x_sc, y_sc, optimizer, loss_fn, lower_range, ssim_weight_tf,
-                use_huber=use_huber, huber_delta=huber_delta
+                use_huber=use_huber, huber_delta=huber_delta, standardize=standardize_tf
             )
             ep_train_loss += total_l.numpy()
             ep_train_mse  += mse_l.numpy()
@@ -792,7 +811,7 @@ def main():
             batch_idx = idx_val[b * args.batch_size:(b + 1) * args.batch_size]
             h_p = H_perfect[batch_idx]
             h_i = H_input_pilots[batch_idx]
-            x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range)
+            x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range, standardize=args.standardize)
             x_sc = tf.cast(x_sc, tf.float32)
             y_sc = tf.cast(y_sc, tf.float32)
             
@@ -806,7 +825,11 @@ def main():
                 ssim_l = tf.constant(0.0)
             else:
                 mse_l = loss_fn(y_sc, y_pred_sc)
-                max_val = tf.cast(2.0 if lower_range == -1 else 1.0, tf.float32)
+                if args.standardize:
+                    max_val = tf.reduce_max(y_sc) - tf.reduce_min(y_sc)
+                    max_val = tf.maximum(max_val, 1e-8)
+                else:
+                    max_val = tf.cast(2.0 if lower_range == -1 else 1.0, tf.float32)
                 ssim_l = tf.reduce_mean(1.0 - tf_ssim(y_sc, y_pred_sc, max_val=max_val))
                 total_l = (1.0 - ssim_weight_tf) * mse_l + ssim_weight_tf * ssim_l
                 
@@ -846,9 +869,9 @@ def main():
 
     # Final Evaluation (Validation + Test sets)
     print('\n[Evaluation] Running final inference on validation & test sets...')
-    H_pred_train = infer_channel(model, H_perfect[idx_train], H_input_pilots[idx_train], args.batch_size, lower_range)
-    H_pred_val   = infer_channel(model, H_perfect[idx_val], H_input_pilots[idx_val], args.batch_size, lower_range)
-    H_pred_test  = infer_channel(model, H_perfect[idx_test], H_input_pilots[idx_test], args.batch_size, lower_range)
+    H_pred_train = infer_channel(model, H_perfect[idx_train], H_input_pilots[idx_train], args.batch_size, lower_range, standardize=args.standardize)
+    H_pred_val   = infer_channel(model, H_perfect[idx_val], H_input_pilots[idx_val], args.batch_size, lower_range, standardize=args.standardize)
+    H_pred_test  = infer_channel(model, H_perfect[idx_test], H_input_pilots[idx_test], args.batch_size, lower_range, standardize=args.standardize)
 
     # Compute final metrics
     mmse_train = compute_mmse(H_pred_train, H_perfect[idx_train])
@@ -932,6 +955,7 @@ def main():
             f.write(f"SNR (dB):             {args.snr}\n")
             f.write(f"Input Type:           {args.input_type}\n")
             f.write(f"Loss Type:            {args.loss_type}\n")
+            f.write(f"Standardize:          {args.standardize}\n")
             f.write(f"Best Training Epoch:  {best_epoch}\n\n")
             
             # --- TRAIN ---
@@ -993,7 +1017,7 @@ def main():
         'mmse_li_benchmark_val': mmse_li_benchmark_val, 'nmse_li_benchmark_val': nmse_li_benchmark_val, 'nmse_li_benchmark_val_db': nmse_li_benchmark_val_db, 'ssim_li_benchmark_val': ssim_li_benchmark_val,
         'mmse_test': mmse_test, 'nmse_test': nmse_test, 'nmse_test_db': nmse_test_db, 'ssim_test': ssim_test,
         'mmse_li_benchmark_test': mmse_li_benchmark_test, 'nmse_li_benchmark_test': nmse_li_benchmark_test, 'nmse_li_benchmark_test_db': nmse_li_benchmark_test_db, 'ssim_li_benchmark_test': ssim_li_benchmark_test,
-        'snr': args.snr, 'input_type': args.input_type, 'best_epoch': best_epoch
+        'snr': args.snr, 'input_type': args.input_type, 'standardize': args.standardize, 'best_epoch': best_epoch
     }
     if has_lmmse:
         eval_dict.update({
