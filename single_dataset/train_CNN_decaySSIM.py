@@ -222,6 +222,18 @@ def load_mat_data(mat_path: str, input_type: str):
                 if H_perfect.shape[1] == 14 and H_perfect.shape[2] == 132:
                     H_perfect = np.transpose(H_perfect, (0, 2, 1))
             
+            # Load H_perfect_ori (original true channel before Doppler compensation)
+            H_perfect_ori = None
+            for key in ['H_perfect_ori', 'H_perfect_original', 'H_true_ori', 'H_ori']:
+                if key in f:
+                    H_perfect_ori = h5_to_complex(f[key][()])
+                    if H_perfect_ori.ndim == 3:
+                        if H_perfect_ori.shape[1] == 14 and H_perfect_ori.shape[2] == 132:
+                            H_perfect_ori = np.transpose(H_perfect_ori, (0, 2, 1))
+                    break
+            if H_perfect_ori is None:
+                H_perfect_ori = H_perfect
+            
             N_samples, n_subc, n_symb = H_perfect.shape
             
             # Reconstruct dictionary of other variables for fallback
@@ -273,6 +285,10 @@ def load_mat_data(mat_path: str, input_type: str):
                             break
                 H_input = mat_dict[input_key]
                 
+            H_li_benchmark_grid = mat_dict.get('H_li', mat_dict.get('H_li_ori', mat_dict.get('H_perfect')))
+            if H_li_benchmark_grid.ndim == 2:
+                H_li_benchmark_grid = H_perfect
+                
     else:
         # 1. H_perfect key resolution
         if 'H_perfect' in mat and mat['H_perfect'].size > 0:
@@ -284,6 +300,15 @@ def load_mat_data(mat_path: str, input_type: str):
                 if not k.startswith('__') and isinstance(mat[k], np.ndarray) and mat[k].ndim == 3:
                     H_perfect = mat[k].T
                     break
+
+        # Load H_perfect_ori
+        H_perfect_ori = None
+        for key in ['H_perfect_ori', 'H_perfect_original', 'H_true_ori', 'H_ori']:
+            if key in mat:
+                H_perfect_ori = mat[key].T
+                break
+        if H_perfect_ori is None:
+            H_perfect_ori = H_perfect
 
         N_samples, n_subc, n_symb = H_perfect.shape
 
@@ -324,10 +349,14 @@ def load_mat_data(mat_path: str, input_type: str):
                         break
             H_input = mat[input_key].T
 
+        H_li_benchmark_grid = mat.get('H_li', mat.get('H_li_ori', mat['H_perfect'])).T
+        if H_li_benchmark_grid.ndim == 2:
+            H_li_benchmark_grid = H_perfect
+
     H_perfect = H_perfect.astype(np.complex64)
     H_input   = H_input.astype(np.complex64)
     print(f'  Loaded H_perfect {H_perfect.shape}  |  H_input ({input_key}) {H_input.shape}')
-    return H_perfect, H_input, mat_dict
+    return H_perfect, H_input, mat_dict, H_perfect_ori, H_li_benchmark_grid
 
 
 def split_indices(N: int, train_frac: float, val_frac: float, seed: int = 1234):
@@ -757,7 +786,7 @@ def main():
     # -- Data loading & splitting ---------------------------------------------
     mat_path = get_data_path(args.data_root, args.snr)
     print(f'[Data] {mat_path}')
-    H_perfect, H_input, mat_dict = load_mat_data(mat_path, args.input_type)
+    H_perfect, H_input, mat_dict, H_perfect_ori, H_li_benchmark_grid = load_mat_data(mat_path, args.input_type)
     N = H_perfect.shape[0]
 
     # Calculate pilot bounds dynamically
@@ -1186,6 +1215,33 @@ def main():
 
     scipy.io.savemat(eval_path, eval_dict)
     print(f'[Save] Evaluation results -> {eval_path}')
+
+    # Save the test set channel grids for BER / metrics visualization
+    test_grids_path = os.path.join(save_dir, 'testChannel.mat')
+    # Resolve H_LS_test: retrieve H_ls_pilots sequence
+    H_ls_pilots = mat_dict.get('H_ls_pilots', mat_dict.get('H_ls_pilots_ori'))
+    if H_ls_pilots is not None:
+        if H_ls_pilots.ndim == 2:
+            if H_ls_pilots.shape[0] != H_perfect.shape[0] and H_ls_pilots.shape[1] == H_perfect.shape[0]:
+                H_ls_pilots = H_ls_pilots.T
+            H_LS_test_val = H_ls_pilots[idx_test]
+        else:
+            H_LS_test_val = H_input[idx_test]
+    else:
+        H_LS_test_val = H_input[idx_test]
+
+    test_grids_dict = {
+        'H_original_test': H_perfect_ori[idx_test],      # Original channel before Doppler comp
+        'H_perfect_test': H_perfect[idx_test],            # Effective channel after Doppler comp
+        'H_LS_test': H_LS_test_val,                       # LS pilots sequence
+        'pilot_rows': pilot_rows + 1,                     # 1-indexed row coordinates of pilots for MATLAB
+        'pilot_cols': pilot_cols + 1,                     # 1-indexed column coordinates of pilots for MATLAB
+        'H_LI_test': H_li_benchmark_grid[idx_test],       # Benchmark LI channel grid
+        'H_output_test': H_pred_test,                     # Model output channel grid
+        'snr': args.snr
+    }
+    scipy.io.savemat(test_grids_path, test_grids_dict)
+    print(f"[Save] Saved test channel grids MAT file -> {test_grids_path}")
 
     # Copy readme*.md from dataset folder to results directory
     try:

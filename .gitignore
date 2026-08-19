@@ -5,6 +5,7 @@ __pycache__/
 !single_dataset/**/*.h5
 !synthesize*.mat
 !*results.mat
+!testChannel.mat
 *.sh
 *.out
 *.err
