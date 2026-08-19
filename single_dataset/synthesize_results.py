@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_DIR = os.path.join(THIS_DIR, 'DnCNN_Attention_DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps_LI')
 SNR_LIST = [-10, -5, 0, 5, 10, 15]
+LABEL = 'LI+DnCNN+Attention'
 
 def synthesize_results(input_type):
     # Check if there are any subfolders starting with the prefix (e.g. "LI_" or "LS_")
@@ -73,12 +74,12 @@ def synthesize_results(input_type):
     snrs = collected['snr']
     # 1. MMSE Figure
     plt.figure(figsize=(8, 6))
-    plt.semilogy(snrs, collected['mmse_input_train'], 'o--', label='Input (Train)', color='gray')
-    plt.semilogy(snrs, collected['mmse_train'], 'o-', label='CNN Output (Train)', color='blue')
-    plt.semilogy(snrs, collected['mmse_input_val'], 's--', label='Input (Val)', color='lightcoral')
-    plt.semilogy(snrs, collected['mmse_val'], 's-', label='CNN Output (Val)', color='red')
-    plt.semilogy(snrs, collected['mmse_input_test'], '^--', label='Input (Test)', color='lightgreen')
-    plt.semilogy(snrs, collected['mmse_test'], '^-', label='CNN Output (Test)', color='green')
+    plt.semilogy(snrs, collected['mmse_input_train'], 'o--', label='LS+LI (Train)', color='gray')
+    plt.semilogy(snrs, collected['mmse_train'], 'o-', label=f'{LABEL} (Train)', color='blue')
+    plt.semilogy(snrs, collected['mmse_input_val'], 's--', label='LS+LI (Val)', color='lightcoral')
+    plt.semilogy(snrs, collected['mmse_val'], 's-', label=f'{LABEL} (Val)', color='red')
+    plt.semilogy(snrs, collected['mmse_input_test'], '^--', label='LS+LI (Test)', color='lightgreen')
+    plt.semilogy(snrs, collected['mmse_test'], '^-', label=f'{LABEL} (Test)', color='green')
     plt.xlabel('SNR (dB)', fontsize=12)
     plt.ylabel('MMSE', fontsize=12)
     plt.title(f'MMSE Comparison over SNR ({input_type.upper()})', fontsize=14)
@@ -91,12 +92,12 @@ def synthesize_results(input_type):
     
     # 2. NMSE (dB) Figure
     plt.figure(figsize=(8, 6))
-    plt.plot(snrs, collected['nmse_input_train_db'], 'o--', label='Input (Train)', color='gray')
-    plt.plot(snrs, collected['nmse_train_db'], 'o-', label='CNN Output (Train)', color='blue')
-    plt.plot(snrs, collected['nmse_input_val_db'], 's--', label='Input (Val)', color='lightcoral')
-    plt.plot(snrs, collected['nmse_val_db'], 's-', label='CNN Output (Val)', color='red')
-    plt.plot(snrs, collected['nmse_input_test_db'], '^--', label='Input (Test)', color='lightgreen')
-    plt.plot(snrs, collected['nmse_test_db'], '^-', label='CNN Output (Test)', color='green')
+    plt.plot(snrs, collected['nmse_input_train_db'], 'o--', label='LS+LI (Train)', color='gray')
+    plt.plot(snrs, collected['nmse_train_db'], 'o-', label=f'{LABEL} (Train)', color='blue')
+    plt.plot(snrs, collected['nmse_input_val_db'], 's--', label='LS+LI (Val)', color='lightcoral')
+    plt.plot(snrs, collected['nmse_val_db'], 's-', label=f'{LABEL} (Val)', color='red')
+    plt.plot(snrs, collected['nmse_input_test_db'], '^--', label='LS+LI (Test)', color='lightgreen')
+    plt.plot(snrs, collected['nmse_test_db'], '^-', label=f'{LABEL} (Test)', color='green')
     plt.xlabel('SNR (dB)', fontsize=12)
     plt.ylabel('NMSE (dB)', fontsize=12)
     plt.title(f'NMSE (dB) Comparison over SNR ({input_type.upper()})', fontsize=14)
@@ -109,12 +110,12 @@ def synthesize_results(input_type):
     
     # 3. SSIM Figure
     plt.figure(figsize=(8, 6))
-    plt.plot(snrs, collected['ssim_input_train'], 'o--', label='Input (Train)', color='gray')
-    plt.plot(snrs, collected['ssim_train'], 'o-', label='CNN Output (Train)', color='blue')
-    plt.plot(snrs, collected['ssim_input_val'], 's--', label='Input (Val)', color='lightcoral')
-    plt.plot(snrs, collected['ssim_val'], 's-', label='CNN Output (Val)', color='red')
-    plt.plot(snrs, collected['ssim_input_test'], '^--', label='Input (Test)', color='lightgreen')
-    plt.plot(snrs, collected['ssim_test'], '^-', label='CNN Output (Test)', color='green')
+    plt.plot(snrs, collected['ssim_input_train'], 'o--', label='LS+LI (Train)', color='gray')
+    plt.plot(snrs, collected['ssim_train'], 'o-', label=f'{LABEL} (Train)', color='blue')
+    plt.plot(snrs, collected['ssim_input_val'], 's--', label='LS+LI (Val)', color='lightcoral')
+    plt.plot(snrs, collected['ssim_val'], 's-', label=f'{LABEL} (Val)', color='red')
+    plt.plot(snrs, collected['ssim_input_test'], '^--', label='LS+LI (Test)', color='lightgreen')
+    plt.plot(snrs, collected['ssim_test'], '^-', label=f'{LABEL} (Test)', color='green')
     plt.xlabel('SNR (dB)', fontsize=12)
     plt.ylabel('SSIM', fontsize=12)
     plt.title(f'SSIM Comparison over SNR ({input_type.upper()})', fontsize=14)
