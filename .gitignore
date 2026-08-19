@@ -3,6 +3,8 @@ __pycache__/
 *.mat
 !single_dataset/**/*.mat
 !single_dataset/**/*.h5
+!synthesize*.mat
+!*results.mat
 *.sh
 *.out
 *.err

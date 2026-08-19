@@ -5,10 +5,19 @@ import matplotlib.pyplot as plt
 
 # Directories and parameters
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-DATASET_DIR = os.path.join(THIS_DIR, 'DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps')
+DATASET_DIR = os.path.join(THIS_DIR, 'DnCNN_Attention_DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps_LI')
 SNR_LIST = [-10, -5, 0, 5, 10, 15]
 
 def synthesize_results(input_type):
+    # Check if there are any subfolders starting with the prefix (e.g. "LI_" or "LS_")
+    # excluding the synthesize output folder itself
+    if os.path.exists(DATASET_DIR):
+        subdirs = [d for d in os.listdir(DATASET_DIR) if os.path.isdir(os.path.join(DATASET_DIR, d))]
+        matching_subdirs = [d for d in subdirs if d.lower().startswith(f"{input_type.lower()}_") and not d.lower().endswith("_synthesize")]
+        if not matching_subdirs:
+            print(f"\n=== Skipping synthesis for input_type: {input_type} (No matching {input_type}_ subfolders found) ===")
+            return
+            
     print(f"\n=== Synthesizing results for input_type: {input_type} ===")
     
     # Initialize dictionary to collect lists
@@ -26,7 +35,7 @@ def synthesize_results(input_type):
     }
     
     for snr in SNR_LIST:
-        folder_name = f"{input_type}_{snr}_weightDecay_500epochs"
+        folder_name = f"{input_type}_{snr}"
         mat_path = os.path.join(DATASET_DIR, folder_name, 'results', 'evaluation_results.mat')
         
         if not os.path.exists(mat_path):
@@ -52,7 +61,7 @@ def synthesize_results(input_type):
         collected[key] = np.array(collected[key])
         
     # Create output directory
-    output_dir = os.path.join(DATASET_DIR, f"{input_type}_0_weightDecay_500epochs", 'synthesize_results_overSNR')
+    output_dir = os.path.join(DATASET_DIR, f"{input_type}_synthesize")
     os.makedirs(output_dir, exist_ok=True)
     
     # Save to .mat

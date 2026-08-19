@@ -11,13 +11,14 @@ import onnxruntime as ort
 # CONFIGURATION CONSTANTS
 # Edit these paths and parameters directly to run from your IDE
 # ============================================================================
-MODEL_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\Clipped_DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps"
+MODEL_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DnCNN_Attention_DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps"
 DATASET_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\generatedChan\MATLAB\sampleWiseDoppler_wGeometry_A100_2p18e9_600km_70deg_30kHz"
-OUT_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LIGrid"
+OUT_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_DnCNN_ResNet_Attention"
 MODEL_NAME = "best_net.onnx"
 CLIP_EXTRAP = "auto"       # "auto", "true", or "false" (auto detects if "clip" is in model_dir name)
 OUTPUT_KEY = "auto"        # "auto" saves variable as "H_infer", otherwise custom string
-NUM_SAMPLES = 512           # Integer (e.g. 512, 64) or None to process all samples in the dataset
+NUM_SAMPLES = 64           # Integer (e.g. 512, 64) or None to process all samples in the dataset
+MODEL_TYPE = "LS"          # "auto" (process all), "LI" (only LI subfolders), or "LS" (only LS subfolders)
 # ============================================================================
 
 def extract_snr(folder_name):
@@ -266,7 +267,7 @@ def save_inferred_to_mat(dest_path, source_path, key, H_est, metrics_dict, num_s
 
 def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_SAMPLES,
                   model_name=MODEL_NAME, clip_extrap=CLIP_EXTRAP, output_key=OUTPUT_KEY,
-                  out_dir=OUT_DIR):
+                  out_dir=OUT_DIR, model_type=MODEL_TYPE):
     
     if not os.path.exists(model_dir):
         print(f"Error: Model directory '{model_dir}' does not exist.")
@@ -293,14 +294,26 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
     print(f"Model Filename   : {model_name}")
     print(f"Clip Extrap Mode : {is_clip_extrap}")
     print(f"Output Key Mode  : {output_key}")
+    print(f"Model Type Filter: {model_type}")
     print(f"Num Samples Limit: {num_samples if num_samples is not None else 'All'}")
     print("="*80 + "\n")
 
-    results_summary = []
+    results_summaries = {
+        'LI': [],
+        'LS': [],
+        'PRAC': []
+    }
 
     # List subfolders of the model directory
     model_subfolders = [f for f in os.listdir(model_dir) if os.path.isdir(os.path.join(model_dir, f))]
     
+    # Filter based on MODEL_TYPE parameter
+    model_type_lower = str(model_type).lower()
+    if model_type_lower in ["li", "ls", "prac"]:
+        prefix_pattern = model_type_lower + "_"
+        model_subfolders = [f for f in model_subfolders if f.lower().startswith(prefix_pattern)]
+        print(f"[Filter] Applied model type filter '{model_type}'; matching folders: {model_subfolders}")
+        
     # Sort subfolders to have a neat progress log
     model_subfolders = sorted(model_subfolders, key=lambda x: extract_snr(x) if extract_snr(x) is not None else 999)
 
@@ -360,12 +373,14 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             print(f"  [Warning] Dataset file matlabNTN.mat not found at '{source_mat_path}'. Skipping.")
             continue
             
+        prefix = "LS" if "ls" in sub_lower else ("PRAC" if "prac" in sub_lower else "LI")
+        dest_folder_name = f"{prefix}_{snr}dB"
         if out_dir is not None:
-            dest_folder = os.path.join(out_dir, target_dataset_sub)
+            dest_folder = os.path.join(out_dir, dest_folder_name)
             os.makedirs(dest_folder, exist_ok=True)
             dest_mat_path = os.path.join(dest_folder, "inferredChannel.mat")
         else:
-            dest_mat_path = os.path.join(dataset_dir, target_dataset_sub, "inferredChannel.mat")
+            dest_mat_path = os.path.join(dataset_dir, target_dataset_sub, f"inferredChannel_{prefix}.mat")
             
         mat_path = source_mat_path
         print(f"  Matched target dataset: {mat_path}")
@@ -467,32 +482,54 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             output_name = sess.get_outputs()[0].name
             input_shape = sess.get_inputs()[0].shape
             
-            is_nchw = False
-            if len(input_shape) == 4:
-                if input_shape[1] == 2:
-                    is_nchw = True
-                elif input_shape[3] == 2:
-                    is_nchw = False
-                else:
-                    is_nchw = (input_shape[1] < input_shape[2] and input_shape[1] < input_shape[3])
+            # Get expected input and output shapes
+            input_shape = sess.get_inputs()[0].shape
+            output_shape = sess.get_outputs()[0].shape
+            
+            print(f"    ONNX Model Shapes: Input={input_shape}, Output={output_shape}")
 
-            print(f"    ONNX Input: Name='{input_name}', Shape={input_shape}, Format={'NCHW' if is_nchw else 'NHWC'}")
+            # Determine input permutation mapping (1, 132, 14, 2) -> expected input shape
+            input_perm = None
+            if len(input_shape) == 4:
+                perm = []
+                for dim in input_shape:
+                    if dim == 2:
+                        perm.append(3)
+                    elif dim == 132:
+                        perm.append(1)
+                    elif dim == 14:
+                        perm.append(2)
+                    else:
+                        perm.append(0) # Batch dimension
+                input_perm = tuple(perm)
 
             residuals = []
             for idx in range(N_samples):
-                x_sample = x_scaled[idx:idx+1]
-                if is_nchw:
-                    x_sample = np.transpose(x_sample, (0, 3, 1, 2))
+                x_sample = x_scaled[idx:idx+1]  # Shape: (1, 132, 14, 2)
                 
-                # Inference
+                # Transpose input to match model shape if permutation is found
+                if input_perm is not None:
+                    x_sample = np.transpose(x_sample, input_perm)
+                
+                # Run ONNX inference
                 res_out = sess.run([output_name], {input_name: x_sample.astype(np.float32)})[0]
                 
-                if is_nchw:
-                    res_out = np.transpose(res_out, (0, 2, 3, 1))
+                # Dynamically align output back to shape (132, 14, 2)
+                # Find dimensions of size 132, 14, and 2 in the output shape
+                res_squeezed = np.squeeze(res_out)
+                sq_shape = list(res_squeezed.shape)
+                if 132 in sq_shape and 14 in sq_shape and 2 in sq_shape:
+                    idx_132 = sq_shape.index(132)
+                    idx_14 = sq_shape.index(14)
+                    idx_2 = sq_shape.index(2)
+                    res_aligned = np.transpose(res_squeezed, (idx_132, idx_14, idx_2))
+                else:
+                    # Fallback to standard NHWC shape
+                    res_aligned = res_squeezed.reshape(132, 14, 2)
                 
-                residuals.append(res_out[0])
+                residuals.append(res_aligned)
                 
-            residual = np.array(residuals)  # (N, 132, 14, 2)
+            residual = np.array(residuals)  # Shape: (N, 132, 14, 2)
         except Exception as e:
             print(f"    [Error] ONNX model execution failed: {e}. Skipping.")
             continue
@@ -518,16 +555,7 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
 
         print(f"    [Metrics] MMSE: {mmse:.6e} | NMSE: {nmse:.6f} | NMSE (dB): {nmse_db:.2f} dB | SSIM: {ssim:.6f}")
 
-        # Store for reference in info.md summary
-        results_summary.append({
-            'snr': snr,
-            'mmse': mmse,
-            'nmse': nmse,
-            'nmse_db': nmse_db,
-            'ssim': ssim
-        })
-
-        # 9. Save inferred channel and metrics combined with original dataset variables
+        # Determine out_key
         if output_key == "auto":
             if "prac" in sub_lower:
                 out_key = "H_PRAC_infer"
@@ -537,7 +565,18 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
                 out_key = "H_LI_infer"
         else:
             out_key = output_key
-        
+
+        # Store for reference in summary
+        results_summaries[prefix].append({
+            'snr': snr,
+            'mmse': mmse,
+            'nmse': nmse,
+            'nmse_db': nmse_db,
+            'ssim': ssim,
+            'out_key': out_key
+        })
+
+        # 9. Save inferred channel and metrics combined with original dataset variables
         metrics_dict = {
             'mmse': mmse,
             'nmse': nmse,
@@ -551,10 +590,8 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
     print(f"  Inference batch run complete. Successfully saved {matched_count} datasets.")
     print("="*80 + "\n")
 
-    # Write info.md inside out_dir if specified
+    # Write separate type-specific info files if out_dir is specified
     if out_dir is not None and matched_count > 0:
-        info_path = os.path.join(out_dir, "info.md")
-        
         # Helper to get notable path highlights starting from token
         def get_notable_path(full_path, start_token):
             normalized = os.path.normpath(full_path)
@@ -565,30 +602,39 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             
         notable_model = get_notable_path(model_dir, "single_dataset")
         notable_dataset = get_notable_path(dataset_dir, "MATLAB")
-        
-        # Build metrics summary table
-        table_rows = [
-            "| SNR (dB) | MMSE | NMSE | NMSE (dB) | SSIM |",
-            "|----------|------|------|-----------|------|"
-        ]
-        sorted_summary = sorted(results_summary, key=lambda x: x['snr'])
-        for r in sorted_summary:
-            table_rows.append(f"| {r['snr']:+d} | {r['mmse']:.6e} | {r['nmse']:.6f} | {r['nmse_db']:.2f} dB | {r['ssim']:.6f} |")
-        metrics_table = "\n".join(table_rows)
-        
-        md_content = f"""# Inference Run Reference
+
+        for prefix, summary_list in results_summaries.items():
+            if not summary_list:
+                continue
+                
+            info_filename = f"{prefix}_info.md"
+            info_path = os.path.join(out_dir, info_filename)
+            
+            # Build metrics summary table
+            table_rows = [
+                "| SNR (dB) | MMSE | NMSE | NMSE (dB) | SSIM |",
+                "|----------|------|------|-----------|------|"
+            ]
+            sorted_summary = sorted(summary_list, key=lambda x: x['snr'])
+            for r in sorted_summary:
+                table_rows.append(f"| {r['snr']:+d} | {r['mmse']:.6e} | {r['nmse']:.6f} | {r['nmse_db']:.2f} dB | {r['ssim']:.6f} |")
+            metrics_table = "\n".join(table_rows)
+            
+            ref_out_key = sorted_summary[0]['out_key']
+            
+            md_content = f"""# {prefix} Inference Run Reference
 
 - **Source Trained Model Folder**: {notable_model}
 - **Target Dataset Folder**: {notable_dataset}
 
-## Inference Performance Summary
+## Inference Performance Summary ({prefix})
 {metrics_table}
 
 ## Inferred MAT File Field Reference
-All variables are saved combined in **`inferredChannel.mat`** inside each target SNR subfolder.
+All variables are saved combined in **`inferredChannel.mat`** inside each target `{prefix}_xdB` subfolder.
 
 ### Belong to Inference Results
-- `{out_key}`: The complex estimated/inferred channel matrix (shape: `(N, 132, 14)`).
+- `{ref_out_key}`: The complex estimated/inferred channel matrix (shape: `(N, 132, 14)`).
 - `mmse`: Average Mean Squared Error compared to perfect label (scalar).
 - `nmse`: Average Normalized Mean Squared Error (scalar).
 - `nmse_db`: Average NMSE in dB (scalar).
@@ -607,14 +653,14 @@ All variables are saved combined in **`inferredChannel.mat`** inside each target
 - **ONNX Model File**: {model_name}
 - **Number of Samples**: {num_samples if num_samples is not None else 'All'}
 - **Extrapolation Clipping**: {is_clip_extrap}
-- **MATLAB Variable Key**: {out_key}
+- **MATLAB Variable Key**: {ref_out_key}
 """
-        try:
-            with open(info_path, "w") as fh:
-                fh.write(md_content)
-            print(f"  [SUCCESS] Created info.md reference file in output directory: {info_path}")
-        except Exception as e:
-            print(f"  [Warning] Failed to write info.md: {e}")
+            try:
+                with open(info_path, "w") as fh:
+                    fh.write(md_content)
+                print(f"  [SUCCESS] Created {info_filename} reference file in output directory: {info_path}")
+            except Exception as e:
+                print(f"  [Warning] Failed to write {info_filename}: {e}")
 
 if __name__ == "__main__":
     run_inference()

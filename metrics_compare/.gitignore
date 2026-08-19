@@ -1,0 +1,15 @@
+A300_B100_300_DANN/
+A300_B100_300_JMMD/
+D30_B100_300_DANN/
+D30_B100_300_JMMD/
+*.asv
+*.mat
+!BER_performance_results.mat
+!evaluation_results.mat
+!training_history.mat
+!final_net.mat
+!best_net.mat
+!synthesized*.mat
+
+# Auto-generated MATLAB ONNX package folders
++*/
