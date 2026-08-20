@@ -3873,7 +3873,7 @@ class DnCNN_ResNet_Attention(tf.keras.Model):
                 
         # Output adaptation: final_filters -> output_channels
         self.output_conv = tf.keras.layers.Conv2D(
-            output_channels, (3, 3), padding='valid', activation='tanh',
+            output_channels, (3, 3), padding='valid',
             kernel_regularizer=tf.keras.regularizers.l2(gen_l2) if gen_l2 else None
         )
         
