@@ -1,9 +1,9 @@
 
-folders = {'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LSSequence',
+folders = {'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LSSequence_standardize',
     'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LI_Grid',
     'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_DnCNN_ResNet_Attention_LI'};
 folder_labels = {'LS+Attention Inferred', 'LI+DnCNN Inferred', 'LI+Attention+DnCNN Inferred'};
-output_folder = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\metrics_compare\syn_inference_all_models\DUR100__A100_2p18e9_600km_30kHz_2';
+output_folder = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_syn_2';
 
 plot_synthesized_comparison(folders, folder_labels, output_folder)
 
@@ -433,6 +433,19 @@ function results = plot_synthesized_comparison(folders, folder_labels, output_fo
     mat_out_path = fullfile(output_folder, 'synthesized_comparison_results.mat');
     save(mat_out_path, '-struct', 'save_struct');
     safe_printf('Saved synthesized comparison MAT file: %s\n', mat_out_path);
+
+    % Save a text file note listing the plotted folders and labels
+    txt_out_path = fullfile(output_folder, 'plotted_folders.txt');
+    fid = fopen(txt_out_path, 'w');
+    if fid ~= -1
+        fprintf(fid, 'Folders loaded and plotted in this multi-model comparison:\n');
+        for idx = 1:num_folders
+            fprintf(fid, '  - Legend Label: %s\n', folder_labels{idx});
+            fprintf(fid, '    Source Path:  %s\n', folders{idx});
+        end
+        fclose(fid);
+        safe_printf('Saved plotted folders configuration list to: %s\n', txt_out_path);
+    end
 
     results = save_struct;
     safe_printf('\nSynthesized results comparison complete!\n');

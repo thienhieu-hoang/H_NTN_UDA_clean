@@ -18,8 +18,8 @@ USAGE:
 ========================================================================================
 %}
 
-folder = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_DnCNN_ResNet_Attention_LS';
-labelname = 'LS+Attention+DnCNN Inferred';
+folder = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LSSequence_standardize';
+labelname = 'LS+Attention Inferred';
 BER_metrics_compare(folder, labelname)
 
 function results = BER_metrics_compare(batch_folder, labelname)

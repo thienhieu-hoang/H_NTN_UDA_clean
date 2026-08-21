@@ -11,11 +11,12 @@ import onnxruntime as ort
 # CONFIGURATION CONSTANTS
 # Edit these paths and parameters directly to run from your IDE
 # ============================================================================
-MODEL_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\Attention_DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps"
+MODEL_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps_LS_Attention_standardize"
 DATASET_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\generatedChan\MATLAB\sampleWiseDoppler_wGeometry_A100_2p18e9_600km_70deg_30kHz"
-OUT_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LSSequence"
+OUT_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LSSequence_standardize"
 MODEL_NAME = "best_model.onnx"
-CLIP_EXTRAP = "auto"       # "auto", "true", or "false" (auto detects if "clip" is in model_dir name)
+CLIP_EXTRAP = "auto"       # "auto", "true", or "false" (auto detects true if "clip" or "LI" is in model_dir or subdirs)
+STANDARDIZE = "auto"       # "auto" (detects if "standardize" is in model_dir name), True, or False      ## False hope = using min-max Scaler
 OUTPUT_KEY = "auto"        # "auto" saves variable as "H_infer", otherwise custom string
 NUM_SAMPLES = 512           # Integer (e.g. 512, 64) or None to process all samples in the dataset
 # ============================================================================
@@ -67,6 +68,35 @@ def de_min_max(x_normd, x_min, x_max, lower_range=-1):
     else:
         scale = x_max_b - x_min_b
         return x_normd * scale + x_min_b
+
+def standardize_scaler(x):
+    """
+    Standardize numpy array sample-wise along sequence dimensions.
+    x has shape (N, L, 2)
+    """
+    N = x.shape[0]
+    # Calculate mean and std sample-wise over the L elements
+    x_mean = np.mean(x, axis=1)  # (N, 2)
+    x_std = np.std(x, axis=1)    # (N, 2)
+    x_std = np.clip(x_std, 1e-30, None)  # (N, 2)
+    
+    reshape_dims = [N] + [1] * (x.ndim - 2) + [2]
+    x_mean_b = x_mean.reshape(reshape_dims)
+    scale_b = x_std.reshape(reshape_dims)
+    
+    x_scaled = (x - x_mean_b) / scale_b
+    return x_scaled, x_mean, x_std
+
+def de_standardize(x_normd, x_mean, x_std):
+    """
+    Perform inverse sample-wise standardization for x_normd.
+    x_normd has shape (N, H, W, 2)
+    """
+    N = x_normd.shape[0]
+    reshape_dims = [N] + [1] * (x_normd.ndim - 2) + [2]
+    x_mean_b = x_mean.reshape(reshape_dims)
+    x_std_b = x_std.reshape(reshape_dims)
+    return x_normd * x_std_b + x_mean_b
 
 
 def match_original_shape(H_est, source_mat_path):
@@ -352,7 +382,7 @@ def save_inferred_to_mat(dest_path, source_path, key, H_est, metrics_dict, num_s
 
 def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_SAMPLES,
                   model_name=MODEL_NAME, clip_extrap=CLIP_EXTRAP, output_key=OUTPUT_KEY,
-                  out_dir=OUT_DIR):
+                  out_dir=OUT_DIR, standardize=STANDARDIZE):
     
     if not os.path.exists(model_dir):
         print(f"Error: Model directory '{model_dir}' does not exist.")
@@ -364,11 +394,25 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
 
     # Determine extrapolation clipping mode
     if str(clip_extrap).lower() == "auto":
-        is_clip_extrap = "clip" in os.path.basename(model_dir).lower()
-        print(f"[Auto-detect] Clip extrapolation: {is_clip_extrap} (based on model folder name)")
+        is_clip_extrap = "clip" in model_dir.lower() or "li" in model_dir.lower()
+        if not is_clip_extrap:
+            try:
+                subdirs = [d.lower() for d in os.listdir(model_dir) if os.path.isdir(os.path.join(model_dir, d))]
+                is_clip_extrap = any("li" in d for d in subdirs)
+            except Exception:
+                pass
+        print(f"[Auto-detect] Clip extrapolation: {is_clip_extrap} (based on folder names/structure)")
     else:
         is_clip_extrap = str(clip_extrap).lower() == "true"
         print(f"[Manual override] Clip extrapolation: {is_clip_extrap}")
+
+    # Determine standardization scaling mode
+    if str(standardize).lower() == "auto":
+        is_standardize = "standardize" in os.path.basename(model_dir).lower()
+        print(f"[Auto-detect] Standardization: {is_standardize} (based on model folder name)")
+    else:
+        is_standardize = str(standardize).lower() == "true"
+        print(f"[Manual override] Standardization: {is_standardize}")
 
     print("\n" + "="*80)
     print("  ONNX Batch Inference for MATLAB Channels")
@@ -378,6 +422,7 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
     print(f"Output Directory : {out_dir if out_dir is not None else 'In-place (same as Dataset Directory)'}")
     print(f"Model Filename   : {model_name}")
     print(f"Clip Extrap Mode : {is_clip_extrap}")
+    print(f"Standardize Mode : {is_standardize}")
     print(f"Output Key Mode  : {output_key}")
     print(f"Num Samples Limit: {num_samples if num_samples is not None else 'All'}")
     print("="*80 + "\n")
@@ -477,7 +522,10 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
         x = np.stack([H_in_pilots.real, H_in_pilots.imag], axis=-1).astype(np.float32)
         
         # Scaling sample-wise over the pilot elements
-        x_scaled, x_min, x_max = minmax_scaler(x, lower_range=-1)
+        if is_standardize:
+            x_scaled, x_mean, x_std = standardize_scaler(x)
+        else:
+            x_scaled, x_min, x_max = minmax_scaler(x, lower_range=-1)
 
         # 6. Run ONNX Session Inference
         try:
@@ -503,7 +551,10 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             continue
 
         # 7. Postprocess (Denormalization + Complex reconstruction)
-        x_denormed = de_min_max(y_pred_scaled, x_min, x_max, lower_range=-1)
+        if is_standardize:
+            x_denormed = de_standardize(y_pred_scaled, x_mean, x_std)
+        else:
+            x_denormed = de_min_max(y_pred_scaled, x_min, x_max, lower_range=-1)
         H_est = x_denormed[..., 0] + 1j * x_denormed[..., 1]
         
         # Match original shape dynamically to ensure 100% same layout
@@ -611,6 +662,7 @@ All variables are saved combined in **`inferredChannel.mat`** inside each target
 - **ONNX Model File**: {model_name}
 - **Number of Samples**: {num_samples if num_samples is not None else 'All'}
 - **Extrapolation Clipping**: {is_clip_extrap}
+- **Standardization**: {is_standardize}
 - **MATLAB Variable Key**: {out_key}
 """
         try:
