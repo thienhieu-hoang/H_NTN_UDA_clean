@@ -8,7 +8,7 @@ OVERVIEW:
   from 'inferredChannel.mat' across SNR subfolders (SNR_-10dB, SNR_-5dB, ...):
 
     1. LS + Linear Interpolation (H_li): Standard 2D linear interpolation benchmark.
-    2. Inferred Neural Network (H_LI_infer): Deep Learning model inference output.
+    2. Inferred Neural Network (H_infer): Deep Learning model inference output.
     3. Perfect MMSE Benchmark (H_MMSE): Optimal MMSE estimator using H_ls_pilots
        and empirical covariance matrix R_hh derived from H_perfect.
 

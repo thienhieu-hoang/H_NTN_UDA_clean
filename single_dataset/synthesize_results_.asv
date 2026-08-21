@@ -1,0 +1,582 @@
+%{
+========================================================================================
+    NTN OFDM Channel Estimation Synthesis & Metrics Evaluation (MATLAB Version)
+========================================================================================
+OVERVIEW:
+  This script evaluates and synthesizes the channel estimation performance across SNR points
+  by loading 'testChannel.mat' files from SNR subfolders (LI_-10, LI_-5, LS_-10, etc.).
+
+  It evaluates and compares three key channel estimation approaches:
+    1. H_output : Deep Learning model output (H_output_test).
+    2. H_LMMSE  : Linear Minimum Mean Square Error estimator computed from H_LS_test,
+                  pilot_rows, pilot_cols, and empirical covariance matrix R_hh.
+    3. H_LI     : 2D Linear Interpolation benchmark (H_LI_test).
+
+  Metrics evaluated across SNR points:
+    - Bit Error Rate (BER) via 16QAM 5G NR PDSCH link simulation / equalization.
+    - Normalized Mean Squared Error (NMSE) in linear scale and dB.
+    - Mean Squared Error (MSE).
+    - Structural Similarity Index (SSIM).
+
+USAGE:
+  synthesize_results()               % Synthesizes current directory for both 'LI' and 'LS'
+  synthesize_results(target_dir)      % Synthesizes specific target directory
+  synthesize_results(target_dir, {'LI', 'LS'})
+========================================================================================
+%}
+
+target_dir = ['C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\' ...
+    'DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps_LI_DnCNN_standardize'];
+input_types = 'LI';
+synthesize_results(target_dir, input_types);
+
+function results = synthesize_results(target_dir, input_types)
+
+    % =========================================================================
+    % 1. LEGEND NAMES, LINE COLORS & MARKERS CONFIGURATION
+    % =========================================================================
+    % Legend label names
+    LEGEND_OUTPUT = 'LI + DnCNN';
+    LEGEND_LMMSE  = 'LMMSE Benchmark';
+    LEGEND_LI     = 'LI Benchmark';
+
+    % Line colors (RGB 0 to 1)
+    COLOR_OUTPUT = [0.8500, 0.3250, 0.0980]; % Orange/Red
+    COLOR_LMMSE  = [0.0000, 0.0000, 0.0000]; % Black
+    COLOR_LI     = [0.0000, 0.4470, 0.7410]; % Blue
+
+    % Line styles and markers
+    STYLE_OUTPUT = '-^';  % Solid line with triangle
+    STYLE_LMMSE  = '-s';  % Solid line with square
+    STYLE_LI     = '--o'; % Dashed line with circle
+
+    % Line width & Marker size
+    LINE_WIDTH   = 1.8;
+    MARKER_SIZE  = 7;
+
+    % =========================================================================
+    % 2. INITIALIZATION & DIRECTORY DISCOVERY
+    % =========================================================================
+    if exist('mfilename', 'builtin') && ~isempty(mfilename('fullpath'))
+        script_dir = fileparts(mfilename('fullpath'));
+    else
+        script_dir = pwd;
+    end
+
+    if nargin < 1 || isempty(target_dir)
+        target_dir = script_dir;
+    end
+
+    if nargin < 2 || isempty(input_types)
+        input_types = {'LI', 'LS'};
+    elseif ischar(input_types) || isstring(input_types)
+        input_types = {char(input_types)};
+    end
+
+    % Discover potential dataset folders containing LI_ or LS_ subfolders
+    dataset_folders = discover_dataset_folders(target_dir);
+    if isempty(dataset_folders)
+        dataset_folders = {target_dir};
+    end
+
+    fprintf('========================================================================\n');
+    fprintf('  NTN Channel Estimation Synthesis (H_output vs H_LMMSE vs H_LI)        \n');
+    fprintf('========================================================================\n');
+    fprintf('Target Directory: %s\n', target_dir);
+    fprintf('Dataset Folders Found: %d\n', length(dataset_folders));
+    fprintf('Input Types: %s\n\n', strjoin(input_types, ', '));
+
+    results = struct();
+
+    % Process each dataset folder and each input_type ('LI' or 'LS')
+    for df_idx = 1:length(dataset_folders)
+        curr_ds_dir = dataset_folders{df_idx};
+        [~, ds_name] = fileparts(curr_ds_dir);
+        fprintf('>>> Processing Dataset Directory [%d/%d]: %s <<<\n', df_idx, length(dataset_folders), ds_name);
+
+        for it_idx = 1:length(input_types)
+            input_type = upper(input_types{it_idx});
+            
+            % Run synthesis for specific input type
+            res_struct = process_input_type(curr_ds_dir, input_type, ...
+                LEGEND_OUTPUT, LEGEND_LMMSE, LEGEND_LI, ...
+                COLOR_OUTPUT, COLOR_LMMSE, COLOR_LI, ...
+                STYLE_OUTPUT, STYLE_LMMSE, STYLE_LI, ...
+                LINE_WIDTH, MARKER_SIZE);
+
+            if ~isempty(res_struct)
+                field_key = sprintf('%s_%s', regexprep(ds_name, '\W', '_'), input_type);
+                results.(field_key) = res_struct;
+            end
+        end
+    end
+
+    fprintf('\nSynthesize results completed successfully!\n');
+end
+
+%% Helper function to discover dataset folders containing LI_ or LS_ subfolders
+function dataset_folders = discover_dataset_folders(target_dir)
+    dataset_folders = {};
+    if ~exist(target_dir, 'dir')
+        return;
+    end
+
+    dir_items = dir(target_dir);
+    for k = 1:length(dir_items)
+        if dir_items(k).isdir && ~strcmp(dir_items(k).name, '.') && ~strcmp(dir_items(k).name, '..')
+            subpath = fullfile(target_dir, dir_items(k).name);
+            % Check if this subfolder has LI_ or LS_ subdirectories containing results/testChannel.mat
+            if has_snr_subfolders(subpath)
+                dataset_folders{end+1} = subpath; %#ok<AGROW>
+            end
+        end
+    end
+
+    if isempty(dataset_folders) && has_snr_subfolders(target_dir)
+        dataset_folders = {target_dir};
+    end
+end
+
+%% Helper function to check if a directory has LI_* or LS_* subfolders with testChannel.mat
+function tf = has_snr_subfolders(folder_path)
+    tf = false;
+    items = dir(folder_path);
+    for k = 1:length(items)
+        if items(k).isdir && ~strcmp(items(k).name, '.') && ~strcmp(items(k).name, '..')
+            sname = lower(items(k).name);
+            if (startsWith(sname, 'li_') || startsWith(sname, 'ls_')) && ~endsWith(sname, '_synthesize')
+                mat_path = fullfile(folder_path, items(k).name, 'results', 'testChannel.mat');
+                if exist(mat_path, 'file')
+                    tf = true;
+                    return;
+                end
+            end
+        end
+    end
+end
+
+%% Primary processing function for a single input_type ('LI' or 'LS') in a dataset folder
+function save_struct = process_input_type(dataset_dir, input_type, ...
+    LEGEND_OUTPUT, LEGEND_LMMSE, LEGEND_LI, ...
+    COLOR_OUTPUT, COLOR_LMMSE, COLOR_LI, ...
+    STYLE_OUTPUT, STYLE_LMMSE, STYLE_LI, ...
+    LINE_WIDTH, MARKER_SIZE)
+
+    save_struct = [];
+    prefix = lower(input_type);
+
+    % Find subfolders starting with <input_type>_ (e.g., LI_-10, LI_-5, LS_0, etc.)
+    items = dir(dataset_dir);
+    snr_subfolders = {};
+    snr_vals = [];
+
+    for k = 1:length(items)
+        if items(k).isdir && ~strcmp(items(k).name, '.') && ~strcmp(items(k).name, '..')
+            sname = items(k).name;
+            sname_lower = lower(sname);
+            if startsWith(sname_lower, [prefix, '_']) && ~endsWith(sname_lower, '_synthesize')
+                mat_path = fullfile(dataset_dir, sname, 'results', 'testChannel.mat');
+                if exist(mat_path, 'file')
+                    % Extract SNR from subfolder name or MAT file
+                    tokens = regexp(sname, '_(-?\d+(\.\d+)?)', 'tokens');
+                    if ~isempty(tokens)
+                        snr_val = str2double(tokens{1}{1});
+                    else
+                        mat_data = load(mat_path, 'snr');
+                        if isfield(mat_data, 'snr')
+                            snr_val = double(mat_data.snr);
+                        else
+                            continue;
+                        end
+                    end
+                    snr_subfolders{end+1} = fullfile(dataset_dir, sname, 'results', 'testChannel.mat'); %#ok<AGROW>
+                    snr_vals(end+1) = snr_val; %#ok<AGROW>
+                end
+            end
+        end
+    end
+
+    if isempty(snr_subfolders)
+        fprintf("=== Skipping input_type: %s (No matching %s_ subfolders with testChannel.mat found) ===\n", input_type, input_type);
+        return;
+    end
+
+    % Sort by SNR in ascending order
+    [SNRdB_sorted, sort_idx] = sort(snr_vals);
+    snr_subfolders = snr_subfolders(sort_idx);
+    num_snr = length(SNRdB_sorted);
+
+    fprintf('\nFound %d SNR subfolder(s) for [%s]: SNR = %s dB\n', num_snr, input_type, mat2str(SNRdB_sorted));
+
+    % 5G NR Carrier Configuration for Equalization & BER Simulation
+    carrier = nrCarrierConfig;
+    carrier.SubcarrierSpacing = 30;
+    carrier.NSizeGrid = 11;
+    carrier.CyclicPrefix = 'Normal';
+
+    nSubcarriers = carrier.NSizeGrid * 12; % 132
+    nSymbols     = carrier.SymbolsPerSlot; % 14
+
+    pdsch = nrPDSCHConfig;
+    pdsch.PRBSet = 0:carrier.NSizeGrid-1;
+    pdsch.SymbolAllocation = [0, carrier.SymbolsPerSlot];
+    pdsch.MappingType = 'A';
+    pdsch.NID = carrier.NCellID;
+    pdsch.RNTI = 1;
+    pdsch.NumLayers = 1;
+    pdsch.Modulation = '16QAM';
+
+    pdsch.DMRS.DMRSPortSet = [];
+    pdsch.DMRS.DMRSTypeAPosition = 2;
+    pdsch.DMRS.DMRSLength = 1;
+    pdsch.DMRS.DMRSAdditionalPosition = 1;
+    pdsch.DMRS.DMRSConfigurationType = 2;
+
+    [pdschIndices, pdschInfo] = nrPDSCHIndices(carrier, pdsch);
+    dmrsSymbols = nrPDSCHDMRS(carrier, pdsch);
+    dmrsIndices = nrPDSCHDMRSIndices(carrier, pdsch);
+
+    % Metric storage vectors across SNR points
+    ber_output_arr  = zeros(1, num_snr);
+    ber_lmmse_arr   = zeros(1, num_snr);
+    ber_li_arr      = zeros(1, num_snr);
+
+    mse_output_arr  = zeros(1, num_snr);
+    mse_lmmse_arr   = zeros(1, num_snr);
+    mse_li_arr      = zeros(1, num_snr);
+
+    nmse_output_arr = zeros(1, num_snr);
+    nmse_lmmse_arr  = zeros(1, num_snr);
+    nmse_li_arr     = zeros(1, num_snr);
+
+    nmse_output_db  = zeros(1, num_snr);
+    nmse_lmmse_db   = zeros(1, num_snr);
+    nmse_li_db      = zeros(1, num_snr);
+
+    ssim_output_arr = zeros(1, num_snr);
+    ssim_lmmse_arr  = zeros(1, num_snr);
+    ssim_li_arr     = zeros(1, num_snr);
+
+    % Loop over SNR subfolders
+    for s_idx = 1:num_snr
+        snr_val  = SNRdB_sorted(s_idx);
+        mat_path = snr_subfolders{s_idx};
+        data     = load(mat_path);
+
+        % Extract fields from testChannel.mat
+        if isfield(data, 'H_perfect_test')
+            H_perfect = double(data.H_perfect_test);
+        elseif isfield(data, 'H_original_test')
+            H_perfect = double(data.H_original_test);
+        else
+            error('Missing ground truth channel (H_perfect_test/H_original_test) in: %s', mat_path);
+        end
+
+        H_output    = double(data.H_output_test);
+        H_LI        = double(data.H_LI_test);
+        H_LS_pilots = double(data.H_LS_test);
+        pilot_rows  = double(data.pilot_rows);
+        pilot_cols  = double(data.pilot_cols);
+
+        numUE  = size(H_perfect, 1);
+        nSubcs = size(H_perfect, 2);
+        nSymbs = size(H_perfect, 3);
+        nREs   = nSubcs * nSymbs;
+
+        % Convert 2D pilot coordinates (pilot_rows, pilot_cols) to 1D linear indices in 132x14 grid
+        dmrs_idx = sub2ind([nSubcs, nSymbs], pilot_rows, pilot_cols);
+
+        % Compute Empirical Covariance Matrix R_hh across UEs from H_perfect
+        H_perf_matrix = zeros(nREs, numUE);
+        for n = 1:numUE
+            h_grid = squeeze(H_perfect(n, :, :));
+            H_perf_matrix(:, n) = h_grid(:);
+        end
+
+        R_hh    = (H_perf_matrix * H_perf_matrix') / numUE;
+        R_h_hp  = R_hh(:, dmrs_idx);
+        R_hp_hp = R_hh(dmrs_idx, dmrs_idx);
+
+        % Noise power calculation for LMMSE weight matrix
+        sigPower   = mean(abs(H_LS_pilots(:)).^2);
+        snr_linear = 10^(snr_val / 10);
+        noisePower = sigPower / snr_linear;
+
+        % Compute LMMSE Weight Matrix W_MMSE
+        W_MMSE = R_h_hp / (R_hp_hp + noisePower * eye(length(dmrs_idx)));
+
+        % Generate H_LMMSE estimates for all UEs
+        H_LMMSE = zeros(numUE, nSubcs, nSymbs);
+        for n = 1:numUE
+            h_pilot_vec = H_LS_pilots(n, :).';
+            h_lmmse_vec = W_MMSE * h_pilot_vec;
+            H_LMMSE(n, :, :) = reshape(h_lmmse_vec, [nSubcs, nSymbs]);
+        end
+
+        % Per-UE Metric Accumulators
+        ber_output_ue = zeros(1, numUE);
+        ber_lmmse_ue  = zeros(1, numUE);
+        ber_li_ue     = zeros(1, numUE);
+
+        mse_output_ue = zeros(1, numUE);
+        mse_lmmse_ue  = zeros(1, numUE);
+        mse_li_ue     = zeros(1, numUE);
+
+        nmse_output_ue = zeros(1, numUE);
+        nmse_lmmse_ue  = zeros(1, numUE);
+        nmse_li_ue     = zeros(1, numUE);
+
+        ssim_output_ue = zeros(1, numUE);
+        ssim_lmmse_ue  = zeros(1, numUE);
+        ssim_li_ue     = zeros(1, numUE);
+
+        rng(2026 + s_idx); % Fixed seed per SNR
+
+        for n = 1:numUE
+            H_perf_n   = squeeze(H_perfect(n, :, :));
+            H_out_n    = squeeze(H_output(n, :, :));
+            H_lmmse_n  = squeeze(H_LMMSE(n, :, :));
+            H_li_n     = squeeze(H_LI(n, :, :));
+
+            % Generate PDSCH Transmission
+            txBits = randi([0 1], pdschInfo.G, 1);
+            txSymbols = nrPDSCH(carrier, pdsch, txBits);
+
+            txGrid = zeros(nSubcarriers, nSymbols);
+            txGrid(pdschIndices) = txSymbols;
+            txGrid(dmrsIndices)  = dmrsSymbols;
+
+            rxGrid_clean = txGrid .* H_perf_n;
+            sigPwr_grid  = mean(abs(rxGrid_clean(:)).^2);
+            N0           = sigPwr_grid / snr_linear;
+            noise_grid   = sqrt(N0 / 2) * (randn(size(rxGrid_clean)) + 1j * randn(size(rxGrid_clean)));
+            rxGrid       = rxGrid_clean + noise_grid;
+
+            % --- Demodulation & BER for H_output ---
+            rxData_out = rxGrid(pdschIndices) .* conj(H_out_n(pdschIndices)) ./ (abs(H_out_n(pdschIndices)).^2 + N0);
+            llr_out    = nrPDSCHDecode(carrier, pdsch, rxData_out, N0);
+            ber_output_ue(n) = mean(txBits ~= (llr_out{1} < 0));
+
+            % --- Demodulation & BER for H_LMMSE ---
+            rxData_lmmse = rxGrid(pdschIndices) .* conj(H_lmmse_n(pdschIndices)) ./ (abs(H_lmmse_n(pdschIndices)).^2 + N0);
+            llr_lmmse    = nrPDSCHDecode(carrier, pdsch, rxData_lmmse, N0);
+            ber_lmmse_ue(n) = mean(txBits ~= (llr_lmmse{1} < 0));
+
+            % --- Demodulation & BER for H_LI ---
+            rxData_li = rxGrid(pdschIndices) .* conj(H_li_n(pdschIndices)) ./ (abs(H_li_n(pdschIndices)).^2 + N0);
+            llr_li    = nrPDSCHDecode(carrier, pdsch, rxData_li, N0);
+            ber_li_ue(n) = mean(txBits ~= (llr_li{1} < 0));
+
+            % --- MSE Calculation ---
+            mse_output_ue(n) = mean(abs(H_out_n(:)   - H_perf_n(:)).^2);
+            mse_lmmse_ue(n)  = mean(abs(H_lmmse_n(:) - H_perf_n(:)).^2);
+            mse_li_ue(n)     = mean(abs(H_li_n(:)    - H_perf_n(:)).^2);
+
+            % --- NMSE Calculation ---
+            norm_gt = sum(abs(H_perf_n(:)).^2);
+            nmse_output_ue(n) = sum(abs(H_out_n(:)   - H_perf_n(:)).^2) / norm_gt;
+            nmse_lmmse_ue(n)  = sum(abs(H_lmmse_n(:) - H_perf_n(:)).^2) / norm_gt;
+            nmse_li_ue(n)     = sum(abs(H_li_n(:)    - H_perf_n(:)).^2) / norm_gt;
+
+            % --- SSIM Calculation ---
+            max_val = max(abs(H_perf_n(:)));
+            if max_val > 0
+                img_gt    = abs(H_perf_n)  / max_val;
+                img_out   = abs(H_out_n)   / max_val;
+                img_lmmse = abs(H_lmmse_n) / max_val;
+                img_li    = abs(H_li_n)    / max_val;
+
+                ssim_output_ue(n) = compute_ssim_robust(img_out,   img_gt);
+                ssim_lmmse_ue(n)  = compute_ssim_robust(img_lmmse, img_gt);
+                ssim_li_ue(n)     = compute_ssim_robust(img_li,    img_gt);
+            end
+        end
+
+        % Store average metrics for current SNR
+        ber_output_arr(s_idx)  = mean(ber_output_ue);
+        ber_lmmse_arr(s_idx)   = mean(ber_lmmse_ue);
+        ber_li_arr(s_idx)      = mean(ber_li_ue);
+
+        mse_output_arr(s_idx)  = mean(mse_output_ue);
+        mse_lmmse_arr(s_idx)   = mean(mse_lmmse_ue);
+        mse_li_arr(s_idx)      = mean(mse_li_ue);
+
+        nmse_output_arr(s_idx) = mean(nmse_output_ue);
+        nmse_lmmse_arr(s_idx)  = mean(nmse_lmmse_ue);
+        nmse_li_arr(s_idx)     = mean(nmse_li_ue);
+
+        nmse_output_db(s_idx)  = 10 * log10(mean(nmse_output_ue));
+        nmse_lmmse_db(s_idx)   = 10 * log10(mean(nmse_lmmse_ue));
+        nmse_li_db(s_idx)      = 10 * log10(mean(nmse_li_ue));
+
+        ssim_output_arr(s_idx) = mean(ssim_output_ue);
+        ssim_lmmse_arr(s_idx)  = mean(ssim_lmmse_ue);
+        ssim_li_arr(s_idx)     = mean(ssim_li_ue);
+    end
+
+    % Prepare output folder <input_type>_synthesize/
+    output_dir = fullfile(dataset_dir, sprintf('%s_synthesize', input_type));
+    if ~exist(output_dir, 'dir')
+        mkdir(output_dir);
+    end
+
+    % Build Save Struct
+    save_struct = struct();
+    save_struct.snr          = SNRdB_sorted;
+    save_struct.ber_output   = ber_output_arr;
+    save_struct.ber_lmmse    = ber_lmmse_arr;
+    save_struct.ber_li       = ber_li_arr;
+
+    save_struct.mse_output   = mse_output_arr;
+    save_struct.mse_lmmse    = mse_lmmse_arr;
+    save_struct.mse_li       = mse_li_arr;
+
+    save_struct.nmse_output  = nmse_output_arr;
+    save_struct.nmse_lmmse   = nmse_lmmse_arr;
+    save_struct.nmse_li      = nmse_li_arr;
+
+    save_struct.nmse_output_db = nmse_output_db;
+    save_struct.nmse_lmmse_db  = nmse_lmmse_db;
+    save_struct.nmse_li_db     = nmse_li_db;
+
+    save_struct.ssim_output  = ssim_output_arr;
+    save_struct.ssim_lmmse   = ssim_lmmse_arr;
+    save_struct.ssim_li      = ssim_li_arr;
+
+    % Save synthesized .mat file
+    mat_out_path = fullfile(output_dir, 'synthesized_results.mat');
+    save(mat_out_path, '-struct', 'save_struct');
+    fprintf('Saved synthesized MAT file: %s\n', mat_out_path);
+
+    % =========================================================================
+    % 3. PLOT AND EXPORT PDF FIGURES USING CONFIGURATIONS
+    % =========================================================================
+
+    % --- Figure 1: BER Comparison ---
+    fig1 = figure('Name', 'BER Comparison', 'Color', 'w', 'Position', [100 100 700 500], 'Visible', 'off');
+    hold on;
+    h1 = semilogy(SNRdB_sorted, ber_output_arr, STYLE_OUTPUT, 'Color', COLOR_OUTPUT, 'LineWidth', LINE_WIDTH, 'MarkerSize', MARKER_SIZE, 'MarkerFaceColor', COLOR_OUTPUT);
+    h2 = semilogy(SNRdB_sorted, ber_lmmse_arr,  STYLE_LMMSE,  'Color', COLOR_LMMSE,  'LineWidth', LINE_WIDTH, 'MarkerSize', MARKER_SIZE, 'MarkerFaceColor', COLOR_LMMSE);
+    h3 = semilogy(SNRdB_sorted, ber_li_arr,     STYLE_LI,     'Color', COLOR_LI,     'LineWidth', LINE_WIDTH, 'MarkerSize', MARKER_SIZE, 'MarkerFaceColor', COLOR_LI);
+    xlabel('SNR (dB)', 'FontSize', 12, 'FontWeight', 'bold');
+    ylabel('Bit Error Rate (BER)', 'FontSize', 12, 'FontWeight', 'bold');
+    title(sprintf('BER Comparison over SNR (%s)', input_type), 'FontSize', 14, 'FontWeight', 'bold');
+    grid on; box on; set(gca, 'YMinorGrid', 'on', 'FontSize', 11);
+    legend([h1, h2, h3], {LEGEND_OUTPUT, LEGEND_LMMSE, LEGEND_LI}, 'Location', 'southwest', 'FontSize', 10);
+    hold off;
+    save_pdf_figure(fig1, fullfile(output_dir, 'ber_comparison.pdf'));
+    close(fig1);
+
+    % --- Figure 2: NMSE (dB) Comparison ---
+    fig2 = figure('Name', 'NMSE Comparison', 'Color', 'w', 'Position', [150 150 700 500], 'Visible', 'off');
+    hold on;
+    h1 = plot(SNRdB_sorted, nmse_output_db, STYLE_OUTPUT, 'Color', COLOR_OUTPUT, 'LineWidth', LINE_WIDTH, 'MarkerSize', MARKER_SIZE, 'MarkerFaceColor', COLOR_OUTPUT);
+    h2 = plot(SNRdB_sorted, nmse_lmmse_db,  STYLE_LMMSE,  'Color', COLOR_LMMSE,  'LineWidth', LINE_WIDTH, 'MarkerSize', MARKER_SIZE, 'MarkerFaceColor', COLOR_LMMSE);
+    h3 = plot(SNRdB_sorted, nmse_li_db,     STYLE_LI,     'Color', COLOR_LI,     'LineWidth', LINE_WIDTH, 'MarkerSize', MARKER_SIZE, 'MarkerFaceColor', COLOR_LI);
+    xlabel('SNR (dB)', 'FontSize', 12, 'FontWeight', 'bold');
+    ylabel('NMSE (dB)', 'FontSize', 12, 'FontWeight', 'bold');
+    title(sprintf('NMSE (dB) Comparison over SNR (%s)', input_type), 'FontSize', 14, 'FontWeight', 'bold');
+    grid on; box on; set(gca, 'YMinorGrid', 'on', 'FontSize', 11);
+    legend([h1, h2, h3], {LEGEND_OUTPUT, LEGEND_LMMSE, LEGEND_LI}, 'Location', 'northeast', 'FontSize', 10);
+    hold off;
+    save_pdf_figure(fig2, fullfile(output_dir, 'nmse_comparison.pdf'));
+    close(fig2);
+
+    % --- Figure 3: SSIM Comparison ---
+    fig3 = figure('Name', 'SSIM Comparison', 'Color', 'w', 'Position', [200 200 700 500], 'Visible', 'off');
+    hold on;
+    h1 = plot(SNRdB_sorted, ssim_output_arr, STYLE_OUTPUT, 'Color', COLOR_OUTPUT, 'LineWidth', LINE_WIDTH, 'MarkerSize', MARKER_SIZE, 'MarkerFaceColor', COLOR_OUTPUT);
+    h2 = plot(SNRdB_sorted, ssim_lmmse_arr,  STYLE_LMMSE,  'Color', COLOR_LMMSE,  'LineWidth', LINE_WIDTH, 'MarkerSize', MARKER_SIZE, 'MarkerFaceColor', COLOR_LMMSE);
+    h3 = plot(SNRdB_sorted, ssim_li_arr,     STYLE_LI,     'Color', COLOR_LI,     'LineWidth', LINE_WIDTH, 'MarkerSize', MARKER_SIZE, 'MarkerFaceColor', COLOR_LI);
+    xlabel('SNR (dB)', 'FontSize', 12, 'FontWeight', 'bold');
+    ylabel('SSIM', 'FontSize', 12, 'FontWeight', 'bold');
+    title(sprintf('SSIM Comparison over SNR (%s)', input_type), 'FontSize', 14, 'FontWeight', 'bold');
+    grid on; box on; ylim([0 1.05]); set(gca, 'YMinorGrid', 'on', 'FontSize', 11);
+    legend([h1, h2, h3], {LEGEND_OUTPUT, LEGEND_LMMSE, LEGEND_LI}, 'Location', 'southeast', 'FontSize', 10);
+    hold off;
+    save_pdf_figure(fig3, fullfile(output_dir, 'ssim_comparison.pdf'));
+    close(fig3);
+
+    % --- Figure 4: MSE Comparison ---
+    fig4 = figure('Name', 'MSE Comparison', 'Color', 'w', 'Position', [250 250 700 500], 'Visible', 'off');
+    hold on;
+    h1 = semilogy(SNRdB_sorted, mse_output_arr, STYLE_OUTPUT, 'Color', COLOR_OUTPUT, 'LineWidth', LINE_WIDTH, 'MarkerSize', MARKER_SIZE, 'MarkerFaceColor', COLOR_OUTPUT);
+    h2 = semilogy(SNRdB_sorted, mse_lmmse_arr,  STYLE_LMMSE,  'Color', COLOR_LMMSE,  'LineWidth', LINE_WIDTH, 'MarkerSize', MARKER_SIZE, 'MarkerFaceColor', COLOR_LMMSE);
+    h3 = semilogy(SNRdB_sorted, mse_li_arr,     STYLE_LI,     'Color', COLOR_LI,     'LineWidth', LINE_WIDTH, 'MarkerSize', MARKER_SIZE, 'MarkerFaceColor', COLOR_LI);
+    xlabel('SNR (dB)', 'FontSize', 12, 'FontWeight', 'bold');
+    ylabel('MSE', 'FontSize', 12, 'FontWeight', 'bold');
+    title(sprintf('MSE Comparison over SNR (%s)', input_type), 'FontSize', 14, 'FontWeight', 'bold');
+    grid on; box on; set(gca, 'YMinorGrid', 'on', 'FontSize', 11);
+    legend([h1, h2, h3], {LEGEND_OUTPUT, LEGEND_LMMSE, LEGEND_LI}, 'Location', 'northeast', 'FontSize', 10);
+    hold off;
+    save_pdf_figure(fig4, fullfile(output_dir, 'mse_comparison.pdf'));
+    close(fig4);
+
+    % Save Markdown Report
+    save_markdown_report(output_dir, input_type, SNRdB_sorted, save_struct, LEGEND_OUTPUT, LEGEND_LMMSE, LEGEND_LI);
+    fprintf('Synthesized output saved to: %s\n\n', output_dir);
+end
+
+%% Helper function to safely export PDF figures
+function save_pdf_figure(fig_handle, pdf_path)
+    try
+        exportgraphics(fig_handle, pdf_path, 'ContentType', 'vector');
+    catch
+        try
+            saveas(fig_handle, pdf_path);
+        catch
+            warning('Could not export PDF figure to %s', pdf_path);
+        end
+    end
+end
+
+%% Helper function to calculate robust SSIM
+function val = compute_ssim_robust(x, y)
+    try
+        val = ssim(x, y);
+    catch
+        K1 = 0.01; K2 = 0.03; L = 1.0;
+        C1 = (K1 * L)^2; C2 = (K2 * L)^2;
+        mu_x = mean(x(:)); mu_y = mean(y(:));
+        var_x = var(x(:)); var_y = var(y(:));
+        cov_xy = mean((x(:) - mu_x) .* (y(:) - mu_y));
+
+        num = (2 * mu_x * mu_y + C1) * (2 * cov_xy + C2);
+        den = (mu_x^2 + mu_y^2 + C1) * (var_x + var_y + C2);
+        val = num / den;
+    end
+end
+
+%% Helper function to write markdown summary report
+function save_markdown_report(output_dir, input_type, snrs, s, legend_out, legend_lmmse, legend_li)
+    md_path = fullfile(output_dir, 'synthesis_summary.md');
+    fid = fopen(md_path, 'w');
+    if fid == -1
+        return;
+    end
+
+    fprintf(fid, '# NTN Channel Estimation Synthesis Summary (%s)\n\n', input_type);
+    fprintf(fid, '## BER Comparison Table\n');
+    fprintf(fid, '| SNR (dB) | %s | %s | %s |\n', legend_out, legend_lmmse, legend_li);
+    fprintf(fid, '|:---:|:---:|:---:|:---:|\n');
+    for i = 1:length(snrs)
+        fprintf(fid, '| %.1f | %.6f | %.6f | %.6f |\n', snrs(i), s.ber_output(i), s.ber_lmmse(i), s.ber_li(i));
+    end
+    fprintf(fid, '\n');
+
+    fprintf(fid, '## NMSE (dB) Comparison Table\n');
+    fprintf(fid, '| SNR (dB) | %s | %s | %s |\n', legend_out, legend_lmmse, legend_li);
+    fprintf(fid, '|:---:|:---:|:---:|:---:|\n');
+    for i = 1:length(snrs)
+        fprintf(fid, '| %.1f | %.2f dB | %.2f dB | %.2f dB |\n', snrs(i), s.nmse_output_db(i), s.nmse_lmmse_db(i), s.nmse_li_db(i));
+    end
+    fprintf(fid, '\n');
+
+    fprintf(fid, '## SSIM Comparison Table\n');
+    fprintf(fid, '| SNR (dB) | %s | %s | %s |\n', legend_out, legend_lmmse, legend_li);
+    fprintf(fid, '|:---:|:---:|:---:|:---:|\n');
+    for i = 1:length(snrs)
+        fprintf(fid, '| %.1f | %.4f | %.4f | %.4f |\n', snrs(i), s.ssim_output(i), s.ssim_lmmse(i), s.ssim_li(i));
+    end
+    fclose(fid);
+end
