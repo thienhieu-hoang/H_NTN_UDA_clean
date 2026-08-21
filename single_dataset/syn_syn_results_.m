@@ -517,8 +517,8 @@ function save_markdown_summary(output_dir, loaded_data, avg_li_nmse_db, avg_lmms
         header_str = [header_str, '| Avg LMMSE Bench '];
         delim_str  = [delim_str, '|:---:'];
     end
-    header_str = [header_str, '|\n'];
-    delim_str  = [delim_str, '|\n'];
+    header_str = [header_str, sprintf('|\n')];
+    delim_str  = [delim_str, sprintf('|\n')];
 
     fprintf(fid, '%s', header_str);
     fprintf(fid, '%s', delim_str);
@@ -535,7 +535,7 @@ function save_markdown_summary(output_dir, loaded_data, avg_li_nmse_db, avg_lmms
         if ~isempty(avg_lmmse_nmse_db)
             line_str = [line_str, sprintf('| %.2f dB ', avg_lmmse_nmse_db(s_idx))];
         end
-        line_str = [line_str, '|\n']; %#ok<AGROW>
+        line_str = [line_str, sprintf('|\n')]; %#ok<AGROW>
         fprintf(fid, '%s', line_str);
     end
     fprintf(fid, '\n');
@@ -556,7 +556,7 @@ function save_markdown_summary(output_dir, loaded_data, avg_li_nmse_db, avg_lmms
         if ~isempty(avg_lmmse_ssim)
             line_str = [line_str, sprintf('| %.4f ', avg_lmmse_ssim(s_idx))];
         end
-        line_str = [line_str, '|\n']; %#ok<AGROW>
+        line_str = [line_str, sprintf('|\n')]; %#ok<AGROW>
         fprintf(fid, '%s', line_str);
     end
     fprintf(fid, '\n');
@@ -577,7 +577,7 @@ function save_markdown_summary(output_dir, loaded_data, avg_li_nmse_db, avg_lmms
         if ~isempty(avg_lmmse_mmse)
             line_str = [line_str, sprintf('| %.3e ', avg_lmmse_mmse(s_idx))];
         end
-        line_str = [line_str, '|\n']; %#ok<AGROW>
+        line_str = [line_str, sprintf('|\n')]; %#ok<AGROW>
         fprintf(fid, '%s', line_str);
     end
     fprintf(fid, '\n');
@@ -611,7 +611,7 @@ function save_markdown_summary(output_dir, loaded_data, avg_li_nmse_db, avg_lmms
             if ~isempty(avg_lmmse_ber)
                 line_str = [line_str, sprintf('| %.6f ', avg_lmmse_ber(s_idx))];
             end
-            line_str = [line_str, '|\n']; %#ok<AGROW>
+            line_str = [line_str, sprintf('|\n')]; %#ok<AGROW>
             fprintf(fid, '%s', line_str);
         end
         fprintf(fid, '\n');
