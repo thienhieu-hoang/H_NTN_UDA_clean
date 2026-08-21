@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import shutil
+import time
 import numpy as np
 import scipy.io
 import h5py
@@ -380,7 +381,8 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             os.makedirs(dest_folder, exist_ok=True)
             dest_mat_path = os.path.join(dest_folder, "inferredChannel.mat")
         else:
-            dest_mat_path = os.path.join(dataset_dir, target_dataset_sub, f"inferredChannel_{prefix}.mat")
+            dest_folder = os.path.join(dataset_dir, target_dataset_sub)
+            dest_mat_path = os.path.join(dest_folder, f"inferredChannel_{prefix}.mat")
             
         mat_path = source_mat_path
         print(f"  Matched target dataset: {mat_path}")
@@ -466,6 +468,8 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             continue
 
         # 5. Preprocess (Real/Imag stacking + Clipping + Normalization)
+        start_time = time.perf_counter()
+        
         # Convert complex (N, 132, 14) -> (N, 132, 14, 2)
         x = np.stack([H_in_complex.real, H_in_complex.imag], axis=-1).astype(np.float32)
         
@@ -541,6 +545,11 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
         
         # Match original shape dynamically to ensure 100% same layout
         H_est_to_write = match_original_shape(H_est, source_mat_path)
+        
+        # End timing and calculate statistics
+        end_time = time.perf_counter()
+        total_time = end_time - start_time
+        avg_time_per_sample = total_time / N_samples
 
         # 8. Calculate average metrics
         mmse = compute_mmse(H_est, H_perf_complex)
@@ -584,6 +593,20 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             'ssim': ssim
         }
         save_inferred_to_mat(dest_mat_path, source_mat_path, out_key, H_est_to_write, metrics_dict, num_samples=num_samples)
+        
+        # 10. Save inference time report to .md note
+        try:
+            md_path = os.path.join(dest_folder, "inference_time_note.md")
+            with open(md_path, 'w') as fh:
+                fh.write(f"# Inference Time Report\n\n")
+                fh.write(f"* **Model/Subfolder:** `{sub}`\n")
+                fh.write(f"* **Total Samples in Batch:** {N_samples}\n")
+                fh.write(f"* **Total Inference Time (including Pre + Postprocessing):** {total_time:.4f} seconds\n")
+                fh.write(f"* **Average Inference Time per Sample:** {avg_time_per_sample * 1000:.4f} milliseconds ({avg_time_per_sample:.6f} seconds)\n")
+            print(f"    [Report] Saved inference time note to: {md_path}")
+        except Exception as report_err:
+            print(f"    [Warning] Failed to write inference time note: {report_err}")
+
         matched_count += 1
 
     print("\n" + "="*80)

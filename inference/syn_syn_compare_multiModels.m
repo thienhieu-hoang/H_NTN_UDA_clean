@@ -1,9 +1,9 @@
 
-folders = {'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LSSequence_standardize',
-    'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LI_Grid',
-    'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_DnCNN_ResNet_Attention_LI'};
+folders = {'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\LSSequence_Attention_standardize',
+    'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\LI_Grid_DnCNN',
+    'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\LS_DnCNN_ResNet_Attention'};
 folder_labels = {'LS+Attention Inferred', 'LI+DnCNN Inferred', 'LI+Attention+DnCNN Inferred'};
-output_folder = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_syn_2';
+output_folder = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\syn_2';
 
 plot_synthesized_comparison(folders, folder_labels, output_folder)
 
@@ -445,6 +445,114 @@ function results = plot_synthesized_comparison(folders, folder_labels, output_fo
         end
         fclose(fid);
         safe_printf('Saved plotted folders configuration list to: %s\n', txt_out_path);
+    end
+
+    % Save a markdown report note listing the plotted folders, labels and tables
+    md_out_path = fullfile(output_folder, 'synthesis_comparison_report.md');
+    fid_md = fopen(md_out_path, 'w');
+    if fid_md ~= -1
+        fprintf(fid_md, '# Multi-Model Channel Estimation Synthesis Comparison\n\n');
+        fprintf(fid_md, '**Generated Comparison Output Directory:**\n`%s`\n\n', output_folder);
+        
+        fprintf(fid_md, '## 1. Selected Folder Sources & Curve Configurations\n\n');
+        fprintf(fid_md, '| # | Model / Curve Label | Source Directory Path |\n');
+        fprintf(fid_md, '|:---:|:---|:---|\n');
+        for idx = 1:num_folders
+            fprintf(fid_md, '| %d | **%s** | `%s` |\n', idx, folder_labels{idx}, folders{idx});
+        end
+        fprintf(fid_md, '\n');
+
+        fprintf(fid_md, '--- \n\n');
+        fprintf(fid_md, '## 2. Comparative Metric Summaries Across SNRs\n\n');
+
+        % Build header and delimiter strings once
+        header_str = '| SNR (dB) ';
+        delim_str  = '|:---:';
+        for i = 1:num_folders
+            header_str = [header_str, '| ', folder_labels{i}, ' ']; %#ok<AGROW>
+            delim_str  = [delim_str, '|:---:']; %#ok<AGROW>
+        end
+        header_str = [header_str, sprintf('| Avg LS+LI Bench | Avg LMMSE Bench |\n')];
+        delim_str  = [delim_str, sprintf('|:---:|:---:|\n')];
+
+        % A. NMSE (dB) Table
+        fprintf(fid_md, '### A. NMSE (dB) Comparison Table\n');
+        fprintf(fid_md, '%s', header_str);
+        fprintf(fid_md, '%s', delim_str);
+        for s_idx = 1:num_snr
+            line_str = sprintf('| %.1f ', SNRdB(s_idx));
+            for i = 1:num_folders
+                val = m_nmse_db{i}(s_idx);
+                if isnan(val)
+                    line_str = [line_str, '| N/A ']; %#ok<AGROW>
+                else
+                    line_str = [line_str, sprintf('| %.2f dB ', val)]; %#ok<AGROW>
+                end
+            end
+            line_str = [line_str, sprintf('| %.2f dB | %.2f dB |\n', li_nmse_db_avg(s_idx), mmse_nmse_db_avg(s_idx))];
+            fprintf(fid_md, '%s', line_str);
+        end
+        fprintf(fid_md, '\n');
+
+        % B. SSIM Table
+        fprintf(fid_md, '### B. SSIM Comparison Table\n');
+        fprintf(fid_md, '%s', header_str);
+        fprintf(fid_md, '%s', delim_str);
+        for s_idx = 1:num_snr
+            line_str = sprintf('| %.1f ', SNRdB(s_idx));
+            for i = 1:num_folders
+                val = m_ssim{i}(s_idx);
+                if isnan(val)
+                    line_str = [line_str, '| N/A ']; %#ok<AGROW>
+                else
+                    line_str = [line_str, sprintf('| %.4f ', val)]; %#ok<AGROW>
+                end
+            end
+            line_str = [line_str, sprintf('| %.4f | %.4f |\n', li_ssim_avg(s_idx), mmse_ssim_avg(s_idx))];
+            fprintf(fid_md, '%s', line_str);
+        end
+        fprintf(fid_md, '\n');
+
+        % C. MSE Table
+        fprintf(fid_md, '### C. MSE Comparison Table\n');
+        fprintf(fid_md, '%s', header_str);
+        fprintf(fid_md, '%s', delim_str);
+        for s_idx = 1:num_snr
+            line_str = sprintf('| %.1f ', SNRdB(s_idx));
+            for i = 1:num_folders
+                val = m_mse{i}(s_idx);
+                if isnan(val)
+                    line_str = [line_str, '| N/A ']; %#ok<AGROW>
+                else
+                    line_str = [line_str, sprintf('| %.3e ', val)]; %#ok<AGROW>
+                end
+            end
+            line_str = [line_str, sprintf('| %.3e | %.3e |\n', li_mse_avg(s_idx), mmse_mse_avg(s_idx))];
+            fprintf(fid_md, '%s', line_str);
+        end
+        fprintf(fid_md, '\n');
+
+        % D. BER Table
+        fprintf(fid_md, '### D. BER Comparison Table\n');
+        fprintf(fid_md, '%s', header_str);
+        fprintf(fid_md, '%s', delim_str);
+        for s_idx = 1:num_snr
+            line_str = sprintf('| %.1f ', SNRdB(s_idx));
+            for i = 1:num_folders
+                val = m_ber{i}(s_idx);
+                if isnan(val)
+                    line_str = [line_str, '| N/A ']; %#ok<AGROW>
+                else
+                    line_str = [line_str, sprintf('| %.6f ', val)]; %#ok<AGROW>
+                end
+            end
+            line_str = [line_str, sprintf('| %.6f | %.6f |\n', li_ber_avg(s_idx), mmse_ber_avg(s_idx))];
+            fprintf(fid_md, '%s', line_str);
+        end
+        fprintf(fid_md, '\n');
+
+        fclose(fid_md);
+        safe_printf('Saved comparative synthesis markdown report to: %s\n', md_out_path);
     end
 
     results = save_struct;
