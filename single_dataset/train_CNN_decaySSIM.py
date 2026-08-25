@@ -1,28 +1,23 @@
 """
 Single-Dataset CNN Channel Estimator with Dynamic MSE & SSIM Loss Schedule (OpenNTN)
 =====================================================================================
-Train, evaluate, and test a CNNGenerator on ONE SNR split of the OpenNTN dataset.
+Train, evaluate, and test a CNNGenerator model on ONE SNR split of the OpenNTN dataset.
 All data (train / val / test) come from the *same* SNR folder.
-This script uses a dynamic scheduling approach for combining MSE and SSIM:
-  - Start with a large SSIM weight to help the model learn coarse layout structures first.
-  - Linearly decay the SSIM weight to a smaller value over the training epochs.
-  - Let the MSE loss dominate in the later epochs to fine-tune the absolute coefficient values.
-====================================================================================
-Workflow: 
-- Input: 
-    - H_LI grid (132 x 14 grid) (after LS and Linear Interpolation) 
-    - H_LS sparse grid (only non-zero at the pilot positions, all non-pilot positions are 0) 
-- Process: 
-    -- If input is H_LI: Preprocessing: clipping the extrapolation elements (elements outside the pilot positions) with min and max 
-    value of the interpolated values (elements inside the pilot positions) to limit the error caused by the extrapolation.
-    - Apply min-max scaling (min-max of the input) to all input and corresponding label H_true (same scaling for all) to scale the values to [-1, 1]. 
-    - At the last layer, there is no activation function, so the values can be outside the range [-1, 1].
-    ------------------------------
-    Go to machine learning network 
-    ------------------------------
-    - De-scale the output with the min-max of the input.
-- Output: 
-    - H_hat_LS (132 x 14 grid) 
+
+Features of this script:
+1. Model Architecture:
+   - Uses `CNNGenerator` consisting of stacked SameShapeBlocks but without the `tanh` activation 
+     function from the final Conv2D layer (completely linear outputs).
+   - This allows values to span outside the $[-1, 1]$ range.
+2. Normalization Options:
+   - Sample-wise min-max scaling to [-1, 1] (default).
+   - Sample-wise standardization (mean/std normalization) via `--standardize` flag.
+3. Preprocessing:
+   - If input is H_LI: clipping extrapolation elements (outside pilot boundaries) using the min and max
+     values of pilot positions to reduce interpolation boundary errors.
+4. Loss Schedule:
+   - Starts with a large SSIM weight to learn coarse layout structures, then decays it linearly 
+     to let MSE dominate in the later epochs.
 ====================================================================================
 Usage
 -----
@@ -31,8 +26,8 @@ Usage
     # Example for running a quick smoke test
     python train_CNN_decaySSIM.py --snr 10 --test-code --save-model
 
-    # Example for linear interpolation input with extrapolation clipping
-    python train_CNN_decaySSIM.py --snr 10 --input-type li --clip-extrap --save-model
+    # Example for linear interpolation input with extrapolation clipping and standardization
+    python train_CNN_decaySSIM.py --snr 10 --input-type li --clip-extrap --standardize --save-model
 """
 
 # -- Standard library --------------------------------------------------------

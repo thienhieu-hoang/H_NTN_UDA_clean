@@ -1,32 +1,34 @@
 """
-Single-Dataset cGAN Channel Estimator with WGAN-GP (OpenNTN)
+Single-Dataset CNN Channel Estimator with Axial Self-Attention and Dynamic MSE & SSIM Loss Schedule (OpenNTN)
 =====================================================================================
-Train, evaluate, and test a Pix2Pix-based Generator inside a Conditional GAN (cGAN) 
-on ONE SNR split of the OpenNTN dataset. All data (train / val / test) come from the *same* SNR folder.
+Train, evaluate, and test a DnCNN_ResNet_AxialAttention model on ONE SNR split of the OpenNTN dataset.
+All data (train / val / test) come from the *same* SNR folder.
 
 Features of this script:
-1. Model Architecture:
-   - Uses `GAN` wrapping `Pix2PixGenerator` as generator and `PatchGANDiscriminator` as discriminator.
-   - The generator's final output Conv2DTranspose layer has no activation function (completely linear output)
-     allowing values to span outside the scaling range.
+1. Model Architecture: 
+   - Uses `DnCNN_ResNet_AxialAttention` which replaces standard 2D attention with factored 
+     Axial Self-Attention (sequential 1D attention along subcarriers and symbols dimensions).
+   - The final output layer has no activation function (completely linear output) allowing values
+     to span outside the scaling range.
 2. Normalization Options:
    - Sample-wise min-max scaling to [-1, 1] (default).
    - Sample-wise standardization (mean/std normalization) via `--standardize` flag.
 3. Preprocessing:
    - If input is H_LI: clipping extrapolation elements (outside pilot boundaries) using the min and max
      values of pilot positions to reduce interpolation boundary errors.
-4. Loss Objectives:
-   - WGAN-GP (Wasserstein GAN with Gradient Penalty) adversarial training loss coupled with MSE/Huber estimation loss.
+4. Loss Schedule:
+   - Starts with a large SSIM weight to learn coarse layout structures, then decays it linearly 
+     to let MSE dominate in the later epochs.
 ====================================================================================
 Usage
 -----
-    python train_cGAN.py --snr 10 --save-model
+    python train_DnCNN_AxialAttention.py --snr 10 --ssim-weight-start 0.5 --ssim-weight-end 0.05
 
     # Example for running a quick smoke test
-    python train_cGAN.py --snr 10 --test-code --save-model
+    python train_DnCNN_AxialAttention.py --snr 10 --test-code --save-model
 
     # Example for linear interpolation input with extrapolation clipping and standardization
-    python train_cGAN.py --snr 10 --input-type li --clip-extrap --standardize --save-model
+    python train_DnCNN_AxialAttention.py --snr 10 --input-type li --clip-extrap --standardize --save-model
 """
 
 # -- Standard library --------------------------------------------------------
@@ -116,8 +118,7 @@ def _setup_paths():
 THIS_DIR, PROJECT_ROOT = _setup_paths()
 
 # Lazy import of JMMD utilities (requires project_root on sys.path)
-from utils_GAN import GAN, Pix2PixGenerator, PatchGANDiscriminator      # JMMD/helper/utils_GAN.py
-
+from utils_GAN import DnCNN_ResNet_AxialAttention                     # JMMD/helper/utils_GAN.py
 from utils import minmaxScaler, deMinMax, complx2real, standardizeScaler, deStandardize      # Domain_Adversarial/helper/utils.py
 
 
@@ -470,9 +471,10 @@ def export_model_to_onnx(model: tf.keras.Model, save_path: str,
     try:
         import tf2onnx
     except ImportError:
-        print('[ONNX Warning] tf2onnx package is not installed. Skipping ONNX model export.')
-        print('To enable ONNX export, please install it manually: pip install tf2onnx')
-        return
+        print('[ONNX] Installing tf2onnx package for ONNX model export ...')
+        import subprocess
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'tf2onnx'])
+        import tf2onnx
 
     try:
         spec = (tf.TensorSpec(input_shape, tf.float32, name='input_channel'),)
@@ -616,21 +618,6 @@ def save_loss_plot_pdf(history: dict, save_dir: str):
             plt.close(fig)
             print(f'[PDF Export] SSIM loss component plot saved to: {pdf_path}')
 
-        # 4. Discriminator Loss Plot
-        if 'train_disc_loss' in history and len(history['train_disc_loss']) > 0:
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax.plot(epochs, history['train_disc_loss'], label='Training Discriminator Loss', color='purple', linewidth=2)
-            ax.set_title('WGAN-GP Discriminator Loss over Epochs', fontsize=14)
-            ax.set_xlabel('Epoch', fontsize=12)
-            ax.set_ylabel('Loss (Discriminator)', fontsize=12)
-            ax.grid(True, linestyle='--', alpha=0.6)
-            ax.legend(fontsize=12)
-            plt.tight_layout()
-            pdf_path = os.path.join(save_dir, 'loss_disc.pdf')
-            plt.savefig(pdf_path, format='pdf')
-            plt.close(fig)
-            print(f'[PDF Export] Discriminator loss plot saved to: {pdf_path}')
-
     except Exception as e:
         print(f'[PDF Export Warning] Failed to export loss history plots: {e}')
 
@@ -658,71 +645,39 @@ def compute_combined_loss(y_true, y_pred, loss_fn, lower_range, ssim_weight, sta
     return combined, mse_val, ssim_loss
 
 
-def gradient_penalty(discriminator, real, fake, batch_size):
-    """Calculates the gradient penalty for WGAN-GP."""
-    alpha = tf.random.uniform([batch_size, 1, 1, 1], 0.0, 1.0)
-    diff = fake - real
-    interpolated = real + alpha * diff
-    with tf.GradientTape() as gp_tape:
-        gp_tape.watch(interpolated)
-        pred = discriminator(interpolated, training=True)
-    grads = gp_tape.gradient(pred, [interpolated])[0]
-    norm = tf.sqrt(tf.reduce_sum(tf.square(grads), axis=[1, 2, 3]))
-    gp = tf.reduce_mean((norm - 1.0) ** 2)
-    return gp
-
-
 # ----------------------------------------------------------------------------
 # Training step (compiled for speed)
 # ----------------------------------------------------------------------------
 @tf.function
-def _train_step_gan(model, x_scaled, y_scaled, gen_optimizer, disc_optimizer, loss_fn, lower_range, ssim_weight, adv_weight, standardize):
-    # 1. Train Discriminator (WGAN-GP)
-    with tf.GradientTape() as tape_d:
-        x_fake, _ = model.generator(x_scaled, training=True)
-        d_real = model.discriminator(y_scaled, training=True)
-        d_fake = model.discriminator(x_fake, training=True)
+def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim_weight, standardize):
+    with tf.GradientTape() as tape:
+        residual, _  = model(x_scaled, training=True)
+        x_corrected  = x_scaled + residual
         
-        gp = gradient_penalty(model.discriminator, y_scaled, x_fake, batch_size=tf.shape(x_scaled)[0])
-        lambda_gp = 10.0
+        # Compute combined loss components
+        combined_l, mse_l, ssim_l = compute_combined_loss(y_scaled, x_corrected, loss_fn, lower_range, ssim_weight, standardize)
         
-        d_loss = tf.reduce_mean(d_fake) - tf.reduce_mean(d_real) + lambda_gp * gp
-        if model.discriminator.losses:
-            d_loss += tf.add_n(model.discriminator.losses)
+        reg_loss     = 0.001 * tf.reduce_mean(tf.square(residual))
+        total_loss   = combined_l + reg_loss
+        if model.losses:
+            total_loss += tf.add_n(model.losses)
             
-    grads_d = tape_d.gradient(d_loss, model.discriminator.trainable_variables)
-    disc_optimizer.apply_gradients(zip(grads_d, model.discriminator.trainable_variables))
-    
-    # 2. Train Generator
-    with tf.GradientTape() as tape_g:
-        x_fake, _ = model.generator(x_scaled, training=True)
-        d_fake = model.discriminator(x_fake, training=False)
-        
-        # Generator losses
-        g_adv_loss = -tf.reduce_mean(d_fake)
-        combined_l, mse_l, ssim_l = compute_combined_loss(y_scaled, x_fake, loss_fn, lower_range, ssim_weight, standardize)
-        
-        g_loss = combined_l + adv_weight * g_adv_loss
-        if model.generator.losses:
-            g_loss += tf.add_n(model.generator.losses)
-            
-    grads_g = tape_g.gradient(g_loss, model.generator.trainable_variables)
-    gen_optimizer.apply_gradients(zip(grads_g, model.generator.trainable_variables))
-    
-    return g_loss, d_loss, mse_l, ssim_l
+    grads = tape.gradient(total_loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(grads, model.trainable_variables))
+    return total_loss, mse_l, ssim_l
 
 
 # ----------------------------------------------------------------------------
 # Inference: produce corrected complex channel
 # ----------------------------------------------------------------------------
-def infer_channel(model,
+def infer_channel(model: DnCNN_ResNet_AxialAttention,
                   H_perf: np.ndarray, H_in: np.ndarray,
                   batch_size: int, lower_range: int,
                   clip_extrap: bool = False,
                   pilot_bounds: tuple = None,
                   standardize: bool = False) -> np.ndarray:
     """
-    Run the trained generator model on a full dataset and return the predicted
+    Run the trained model on a full dataset and return the predicted
     complex channel of shape [N, n_subc, n_symb].
     """
     N     = H_perf.shape[0]
@@ -734,8 +689,8 @@ def infer_channel(model,
         x_sc, _, x_val1, x_val2 = preprocess_batch(H_perf[sl], H_in[sl], lower_range,
                                                    clip_extrap=clip_extrap, pilot_bounds=pilot_bounds,
                                                    standardize=standardize)
-        # Directly use generator outputs (Direct Estimation)
-        x_corr, _ = model.generator(x_sc, training=False)
+        residual, _ = model(x_sc, training=False)
+        x_corr      = x_sc + residual
         if standardize:
             x_denorm = deStandardize(x_corr, x_val1, x_val2)
         else:
@@ -749,7 +704,8 @@ def infer_channel(model,
         x_sc, _, x_val1, x_val2 = preprocess_batch(H_perf[sl], H_in[sl], lower_range,
                                                    clip_extrap=clip_extrap, pilot_bounds=pilot_bounds,
                                                    standardize=standardize)
-        x_corr, _ = model.generator(x_sc, training=False)
+        residual, _ = model(x_sc, training=False)
+        x_corr      = x_sc + residual
         if standardize:
             x_denorm = deStandardize(x_corr, x_val1, x_val2)
         else:
@@ -805,8 +761,6 @@ def main():
                         help='Final importance weight for SSIM loss at the last epoch.')
     parser.add_argument('--standardize', action='store_true',
                         help='Use sample-wise standardization (mean/var) instead of min-max scaling')
-    parser.add_argument('--adv-weight', type=float, default=0.01,
-                        help='Weight for Wasserstein GAN adversarial loss')
 
     args = parser.parse_args()
 
@@ -877,11 +831,11 @@ def main():
     print(f'[Data] N={N}  '
           f'train={len(idx_train)}  val={len(idx_val)}  test={len(idx_test)}')
 
-    # -- Model, optimisers, loss -----------------------------------------------
-    model          = GAN(n_subc=132, generator=Pix2PixGenerator, discriminator=PatchGANDiscriminator, gen_l2=None, disc_l2=1e-5)
-    gen_optimizer  = tf.keras.optimizers.Adam(learning_rate=args.lr, beta_1=0.5, beta_2=0.9)
-    disc_optimizer = tf.keras.optimizers.Adam(learning_rate=args.lr * 0.1, beta_1=0.5, beta_2=0.9)
-    loss_fn        = tf.keras.losses.MeanSquaredError()
+    # -- Model, optimiser, loss -----------------------------------------------
+    model     = DnCNN_ResNet_AxialAttention(n_blocks=args.n_blocks)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=args.lr,
+                                         beta_1=0.5, beta_2=0.9)
+    loss_fn   = tf.keras.losses.MeanSquaredError()
 
     # -- Save directory -------------------------------------------------------
     if args.save_dir:
@@ -904,7 +858,6 @@ def main():
     best_epoch    = 0
     history = {
         'train_loss': [],
-        'train_disc_loss': [],
         'train_mse':  [],
         'train_ssim': [],
         'val_loss':   [],
@@ -931,13 +884,11 @@ def main():
             
         history['ssim_weight_history'].append(epoch_ssim_weight)
         
-        # Convert to TensorFlow constants to avoid retracing warnings
+        # Convert to TensorFlow constant to avoid retracing warnings
         ssim_weight_tf = tf.constant(epoch_ssim_weight, dtype=tf.float32)
-        adv_weight_tf = tf.constant(args.adv_weight, dtype=tf.float32)
 
         # ---------- Training pass ----------
         ep_train_loss = 0.0
-        ep_train_disc_loss = 0.0
         ep_train_mse  = 0.0
         ep_train_ssim = 0.0
         for b in range(n_train_batches):
@@ -946,14 +897,12 @@ def main():
             h_i = H_input[batch_idx]
             x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range, clip_extrap=args.clip_extrap, pilot_bounds=pilot_bounds, standardize=args.standardize)
             
-            gen_l, disc_l, mse_l, ssim_l = _train_step_gan(model, x_sc, y_sc, gen_optimizer, disc_optimizer, loss_fn, lower_range, ssim_weight_tf, adv_weight_tf, standardize_tf)
-            ep_train_loss += gen_l.numpy()
-            ep_train_disc_loss += disc_l.numpy()
+            total_l, mse_l, ssim_l = _train_step(model, x_sc, y_sc, optimizer, loss_fn, lower_range, ssim_weight_tf, standardize_tf)
+            ep_train_loss += total_l.numpy()
             ep_train_mse  += mse_l.numpy()
             ep_train_ssim += ssim_l.numpy()
 
         avg_train_loss = ep_train_loss / max(n_train_batches, 1)
-        avg_train_disc_loss = ep_train_disc_loss / max(n_train_batches, 1)
         avg_train_mse  = ep_train_mse / max(n_train_batches, 1)
         avg_train_ssim = ep_train_ssim / max(n_train_batches, 1)
 
@@ -967,7 +916,8 @@ def main():
             h_p = H_perfect[batch_idx]
             h_i = H_input[batch_idx]
             x_sc, y_sc, x_val1, x_val2 = preprocess_batch(h_p, h_i, lower_range, clip_extrap=args.clip_extrap, pilot_bounds=pilot_bounds, standardize=args.standardize)
-            x_corr, _ = model.generator(x_sc, training=False)
+            residual, _ = model(x_sc, training=False)
+            x_corr      = x_sc + residual
             
             # Use current epoch's SSIM weight for validation loss to match training
             comb_l, mse_l, ssim_l = compute_combined_loss(y_sc, x_corr, loss_fn, lower_range, ssim_weight_tf, standardize=args.standardize)
@@ -988,7 +938,6 @@ def main():
         avg_val_nmse = ep_val_nmse / max(n_val_batches, 1)
 
         history['train_loss'].append(avg_train_loss)
-        history['train_disc_loss'].append(avg_train_disc_loss)
         history['train_mse'].append(avg_train_mse)
         history['train_ssim'].append(avg_train_ssim)
         history['val_loss'].append(avg_val_loss)
@@ -1000,7 +949,7 @@ def main():
         if (epoch + 1) % 10 == 0 or epoch == 0 or epoch == args.epochs - 1:
             elapsed = time.perf_counter() - t_start
             print(f'Epoch [{epoch+1:>4d}/{args.epochs}]  '
-                  f'GenLoss={avg_train_loss:.6f} (DiscLoss={avg_train_disc_loss:.6f}, MSE={avg_train_mse:.6f}, SSIM_W={epoch_ssim_weight:.3f})  '
+                  f'TrainLoss={avg_train_loss:.6f} (MSE={avg_train_mse:.6f}, SSIM_W={epoch_ssim_weight:.3f})  '
                   f'ValLoss={avg_val_loss:.6f} (MSE={avg_val_mse:.6f}, SSIM_loss={avg_val_ssim:.4f})  '
                   f'ValNMSE={avg_val_nmse:.6f}  '
                   f't={elapsed:.1f}s')
@@ -1010,7 +959,7 @@ def main():
             best_val_loss = avg_val_loss
             best_epoch    = epoch + 1
             if args.save_model:
-                export_model_to_onnx(model.generator, os.path.join(save_dir, 'best_net.onnx'))
+                export_model_to_onnx(model, os.path.join(save_dir, 'best_net.onnx'))
                 with open(os.path.join(save_dir, 'best_epoch.txt'), 'w') as fh:
                     fh.write(f'best_epoch       = {best_epoch}\n'
                              f'best_val_loss    = {best_val_loss:.8f}\n'
@@ -1024,7 +973,7 @@ def main():
                              f'mse_weight_best  = {1.0 - epoch_ssim_weight:.6f}\n'
                              f'ssim_weight_start= {args.ssim_weight_start}\n'
                              f'ssim_weight_end  = {args.ssim_weight_end}\n'
-                             f'adv_weight       = {args.adv_weight}\n'
+                             f'n_blocks         = {args.n_blocks}\n'
                              f'total_samples    = {N}\n'
                              f'n_train_samples  = {len(idx_train)}\n'
                              f'n_val_samples    = {len(idx_val)}\n'
@@ -1033,7 +982,7 @@ def main():
                              f'data_path        = {mat_path}\n')
 
     if args.save_model:
-        export_model_to_onnx(model.generator, os.path.join(save_dir, 'final_net.onnx'))
+        export_model_to_onnx(model, os.path.join(save_dir, 'final_net.onnx'))
         print(f'\n[Save] Final model -> {os.path.join(save_dir, "final_net.onnx")}')
         print(f'[Save] Best  model -> {os.path.join(save_dir, "best_net.onnx")}'
               f'  (epoch {best_epoch})')
@@ -1042,7 +991,6 @@ def main():
     hist_path = os.path.join(save_dir, 'training_history.mat')
     scipy.io.savemat(hist_path, {
         'train_loss': np.array(history['train_loss']),
-        'train_disc_loss': np.array(history['train_disc_loss']),
         'train_mse':  np.array(history['train_mse']),
         'train_ssim': np.array(history['train_ssim']),
         'val_loss':   np.array(history['val_loss']),
@@ -1057,7 +1005,6 @@ def main():
         'best_epoch': best_epoch,
         'ssim_weight_start': args.ssim_weight_start,
         'ssim_weight_end':   args.ssim_weight_end,
-        'adv_weight':        args.adv_weight,
     })
     print(f'[Save] Training history -> {hist_path}')
 

@@ -149,8 +149,8 @@ class Pix2PixGenerator(tf.keras.Model):
                             apply_dropout='u3' in dropOut_layers,  # True if 'u3' in list
                             kernel_size=(3,3), strides=(2,1), 
                             gen_l2=gen_l2, dropOut_rate=dropOut_rate)
-        self.last = tf.keras.layers.Conv2DTranspose(output_channels, kernel_size=(4,3), strides=(2,1), padding='valid',
-                                                    activation='tanh', kernel_regularizer=kernel_regularizer)
+        self.last = tf.keras.layers.Conv2DTranspose(output_channels, kernel_size=(4,3), strides=(2,1),
+                            padding='valid', kernel_regularizer=kernel_regularizer)
             
     def call(self, x, training=False, return_features=False): 
                 # always return list of features no matter return_features=True or False 
@@ -3743,7 +3743,7 @@ class CNNGenerator(tf.keras.Model):
         
         # Output adaptation: final_filters -> output_channels
         self.output_conv = tf.keras.layers.Conv2D(
-            output_channels, (3, 3), padding='valid', activation='tanh',
+            output_channels, (3, 3), padding='valid',
             kernel_regularizer=tf.keras.regularizers.l2(gen_l2) if gen_l2 else None
         )
     
@@ -3825,6 +3825,324 @@ class SelfAttention2D(tf.keras.layers.Layer):
         # Learnable residual skip connection
         out = x + self.gamma * attn_out
         return out
+
+
+class AxialAttention2D(tf.keras.layers.Layer):
+    """
+    Axial Self-Attention layer for 2D feature maps (B, H, W, C).
+    Applies 1D self-attention along the height (subcarriers) axis and width (symbols) axis sequentially.
+    """
+    def __init__(self, channels, **kwargs):
+        super().__init__(**kwargs)
+        self.channels = channels
+        # Height attention components
+        self.h_query = tf.keras.layers.Conv2D(channels // 8, (1, 1), name="h_query")
+        self.h_key   = tf.keras.layers.Conv2D(channels // 8, (1, 1), name="h_key")
+        self.h_value = tf.keras.layers.Conv2D(channels, (1, 1), name="h_value")
+        
+        # Width attention components
+        self.w_query = tf.keras.layers.Conv2D(channels // 8, (1, 1), name="w_query")
+        self.w_key   = tf.keras.layers.Conv2D(channels // 8, (1, 1), name="w_key")
+        self.w_value = tf.keras.layers.Conv2D(channels, (1, 1), name="w_value")
+        
+        self.gamma_h = None
+        self.gamma_w = None
+
+    def build(self, input_shape):
+        self.gamma_h = self.add_weight(
+            name="gamma_h",
+            shape=[1],
+            initializer="zeros",
+            trainable=True
+        )
+        self.gamma_w = self.add_weight(
+            name="gamma_w",
+            shape=[1],
+            initializer="zeros",
+            trainable=True
+        )
+        super().build(input_shape)
+
+    def call(self, x):
+        B = tf.shape(x)[0]
+        H = tf.shape(x)[1]
+        W = tf.shape(x)[2]
+        
+        # 1. Height-axis Attention (along H)
+        qh = self.h_query(x)
+        kh = self.h_key(x)
+        vh = self.h_value(x)
+        
+        # Reshape to treat W as part of batch: [B * W, H, C_proj]
+        qh = tf.reshape(tf.transpose(qh, [0, 2, 1, 3]), [B * W, H, -1])
+        kh = tf.reshape(tf.transpose(kh, [0, 2, 1, 3]), [B * W, H, -1])
+        vh = tf.reshape(tf.transpose(vh, [0, 2, 1, 3]), [B * W, H, -1])
+        
+        # Attn along H: [B * W, H, H]
+        scores_h = tf.matmul(qh, kh, transpose_b=True)
+        scale_h = tf.cast(tf.sqrt(tf.cast(H, tf.float32)), tf.float32)
+        attn_h = tf.nn.softmax(scores_h / scale_h, axis=-1)
+        
+        # Output H: [B * W, H, C] -> transpose/reshape back to [B, H, W, C]
+        out_h = tf.matmul(attn_h, vh)
+        out_h = tf.transpose(tf.reshape(out_h, [B, W, H, self.channels]), [0, 2, 1, 3])
+        x = x + self.gamma_h * out_h
+        
+        # 2. Width-axis Attention (along W)
+        qw = self.w_query(x)
+        kw = self.w_key(x)
+        vw = self.w_value(x)
+        
+        # Reshape to treat H as part of batch: [B * H, W, C_proj]
+        qw = tf.reshape(qw, [B * H, W, -1])
+        kw = tf.reshape(kw, [B * H, W, -1])
+        vw = tf.reshape(vw, [B * H, W, -1])
+        
+        # Attn along W: [B * H, W, W]
+        scores_w = tf.matmul(qw, kw, transpose_b=True)
+        scale_w = tf.cast(tf.sqrt(tf.cast(W, tf.float32)), tf.float32)
+        attn_w = tf.nn.softmax(scores_w / scale_w, axis=-1)
+        
+        # Output W: [B * H, W, C] -> reshape back to [B, H, W, C]
+        out_w = tf.matmul(attn_w, vw)
+        out_w = tf.reshape(out_w, [B, H, W, self.channels])
+        x = x + self.gamma_w * out_w
+        
+        return x
+
+
+class DnCNN_ResNet_AxialAttention(tf.keras.Model):
+    """
+    DnCNN style ResNet architecture with Axial Self-Attention in the middle of blocks.
+    """
+    def __init__(self, output_channels=2, n_subc=132, gen_l2=None, 
+                 n_blocks=6, base_filters=32, extract_layers=['block_2', 'block_3']):
+        super().__init__()
+        self.n_blocks = n_blocks
+        self.extract_layers = extract_layers
+        
+        # Input adaptation: 2 channels -> base_filters channels
+        self.input_conv = tf.keras.layers.Conv2D(
+            base_filters, (3, 3), padding='valid', activation='relu',
+            kernel_regularizer=tf.keras.regularizers.l2(gen_l2) if gen_l2 else None
+        )
+        
+        self.blocks = []
+        self.attention_layer = None
+        self.attention_after_block = n_blocks // 2  # Middle block
+        
+        for i in range(n_blocks):
+            if i == 0:
+                filters = 64
+                print(f"Block {i+1}: Using {filters} filters (increasing) - Axial")
+            elif i < n_blocks // 2:
+                filters = min(base_filters * (4 ** i), 1024)
+                print(f"Block {i+1}: Using {filters} filters (increasing) - Axial")
+            elif i == n_blocks - 1:
+                filters = 64
+                print(f"Block {i+1}: Using {filters} filters (decreasing) - Axial")
+            else:
+                mirror_index = n_blocks - i - 1
+                filters = min(base_filters * (4 ** mirror_index), 1024)
+                print(f"Block {i+1}: Using {filters} filters (decreasing) - Axial")
+            
+            block = SameShapeBlock(filters=filters, gen_l2=gen_l2)
+            self.blocks.append(block)
+            
+            # Setup axial attention layer in the middle
+            if i + 1 == self.attention_after_block:
+                self.attention_layer = AxialAttention2D(channels=filters)
+                print(f"Setup Axial Self-Attention layer after Block {i+1} (filters={filters})")
+                
+        # Output adaptation: final_filters -> output_channels
+        self.output_conv = tf.keras.layers.Conv2D(
+            output_channels, (3, 3), padding='valid',
+            kernel_regularizer=tf.keras.regularizers.l2(gen_l2) if gen_l2 else None
+        )
+        
+    def call(self, x, training=False, return_features=False):
+        x = reflect_padding_2d(x, pad_h=1, pad_w=1)
+        out = self.input_conv(x)
+        
+        block_outputs = {}
+        for i, block in enumerate(self.blocks):
+            out = block(out, training=training)
+            
+            if i + 1 == self.attention_after_block and self.attention_layer is not None:
+                out = self.attention_layer(out)
+                
+            block_outputs[f'block_{i+1}'] = out
+            
+        out = reflect_padding_2d(out, pad_h=1, pad_w=1)
+        output = self.output_conv(out)
+        
+        features = []
+        for layer_name in self.extract_layers:
+            if layer_name in block_outputs:
+                features.append(block_outputs[layer_name])
+                
+        return output, features
+
+
+class CrossAttention2D(tf.keras.layers.Layer):
+    """
+    Cross-Attention layer where Query is projected from the full 2D grid features (B, H, W, C),
+    and Keys/Values are projected from the sparse pilot positions (B, P, C).
+    """
+    def __init__(self, channels, pilot_rows=None, pilot_cols=None, **kwargs):
+        super().__init__(**kwargs)
+        self.channels = channels
+        self.query_conv = tf.keras.layers.Conv2D(channels // 8, (1, 1), name="query_conv")
+        self.key_dense = tf.keras.layers.Dense(channels // 8, name="key_dense")
+        self.value_dense = tf.keras.layers.Dense(channels, name="value_dense")
+        
+        # Save pilot coordinates if provided
+        if pilot_rows is not None and pilot_cols is not None:
+            self.pilot_rows = tf.constant(pilot_rows, dtype=tf.int32)
+            self.pilot_cols = tf.constant(pilot_cols, dtype=tf.int32)
+        else:
+            self.pilot_rows = None
+            self.pilot_cols = None
+            
+        self.gamma = None
+
+    def build(self, input_shape):
+        self.gamma = self.add_weight(
+            name="gamma",
+            shape=[1],
+            initializer="zeros",
+            trainable=True
+        )
+        super().build(input_shape)
+
+    def call(self, x, pilot_rows=None, pilot_cols=None):
+        B = tf.shape(x)[0]
+        H = tf.shape(x)[1]
+        W = tf.shape(x)[2]
+        
+        p_rows = pilot_rows if pilot_rows is not None else self.pilot_rows
+        p_cols = pilot_cols if pilot_cols is not None else self.pilot_cols
+        
+        if p_rows is None or p_cols is None:
+            # Fallback to self-attention if coords are missing
+            proj_query = self.query_conv(x)
+            proj_query = tf.reshape(proj_query, [B, H * W, -1])
+            
+            proj_key = tf.keras.layers.Conv2D(self.channels // 8, (1, 1))(x)
+            proj_key = tf.reshape(proj_key, [B, H * W, -1])
+            
+            proj_value = tf.keras.layers.Conv2D(self.channels, (1, 1))(x)
+            proj_value = tf.reshape(proj_value, [B, H * W, -1])
+        else:
+            # Extract features only at pilot coordinates
+            coords = tf.stack([p_rows, p_cols], axis=-1)  # [P, 2]
+            P = tf.shape(coords)[0]
+            
+            # Construct gather indices: [B, P, 3] where each element is [batch_idx, row_idx, col_idx]
+            batch_idx = tf.range(B)[:, tf.newaxis, tf.newaxis]  # [B, 1, 1]
+            batch_idx = tf.tile(batch_idx, [1, P, 1])  # [B, P, 1]
+            
+            coords_tiled = tf.tile(coords[tf.newaxis, :, :], [B, 1, 1])  # [B, P, 2]
+            gather_coords = tf.concat([batch_idx, coords_tiled], axis=-1)  # [B, P, 3]
+            
+            # Extract: [B, P, C]
+            pilots_feat = tf.gather_nd(x, gather_coords)
+            
+            # Query projection: [B, H*W, C//8]
+            proj_query = self.query_conv(x)
+            proj_query = tf.reshape(proj_query, [B, H * W, -1])
+            
+            # Key/Value projections: [B, P, C//8] and [B, P, C]
+            proj_key = self.key_dense(pilots_feat)
+            proj_value = self.value_dense(pilots_feat)
+        
+        # Cross-Attention scores: [B, H*W, P]
+        scores = tf.matmul(proj_query, proj_key, transpose_b=True)
+        scale = tf.cast(tf.sqrt(tf.cast(tf.shape(proj_key)[-1], tf.float32)), tf.float32)
+        attn = tf.nn.softmax(scores / scale, axis=-1)
+        
+        # Weighted context output: [B, H*W, C]
+        attn_out = tf.matmul(attn, proj_value)
+        attn_out = tf.reshape(attn_out, [B, H, W, self.channels])
+        
+        # Learnable residual skip connection
+        out = x + self.gamma * attn_out
+        return out
+
+
+class DnCNN_ResNet_CrossAttention(tf.keras.Model):
+    """
+    DnCNN style ResNet architecture with Cross Self-Attention in the middle of blocks.
+    Queries are computed from the full grid, while Keys/Values are from the pilot coordinates.
+    """
+    def __init__(self, output_channels=2, n_subc=132, gen_l2=None, 
+                 n_blocks=6, base_filters=32, extract_layers=['block_2', 'block_3'],
+                 pilot_rows=None, pilot_cols=None):
+        super().__init__()
+        self.n_blocks = n_blocks
+        self.extract_layers = extract_layers
+        
+        # Input adaptation: 2 channels -> base_filters channels
+        self.input_conv = tf.keras.layers.Conv2D(
+            base_filters, (3, 3), padding='valid', activation='relu',
+            kernel_regularizer=tf.keras.regularizers.l2(gen_l2) if gen_l2 else None
+        )
+        
+        self.blocks = []
+        self.attention_layer = None
+        self.attention_after_block = n_blocks // 2  # Middle block
+        
+        for i in range(n_blocks):
+            if i == 0:
+                filters = 64
+                print(f"Block {i+1}: Using {filters} filters (increasing) - Cross")
+            elif i < n_blocks // 2:
+                filters = min(base_filters * (4 ** i), 1024)
+                print(f"Block {i+1}: Using {filters} filters (increasing) - Cross")
+            elif i == n_blocks - 1:
+                filters = 64
+                print(f"Block {i+1}: Using {filters} filters (decreasing) - Cross")
+            else:
+                mirror_index = n_blocks - i - 1
+                filters = min(base_filters * (4 ** mirror_index), 1024)
+                print(f"Block {i+1}: Using {filters} filters (decreasing) - Cross")
+            
+            block = SameShapeBlock(filters=filters, gen_l2=gen_l2)
+            self.blocks.append(block)
+            
+            # Setup cross attention layer in the middle
+            if i + 1 == self.attention_after_block:
+                self.attention_layer = CrossAttention2D(channels=filters, pilot_rows=pilot_rows, pilot_cols=pilot_cols)
+                print(f"Setup Cross Self-Attention layer after Block {i+1} (filters={filters})")
+                
+        # Output adaptation: final_filters -> output_channels
+        self.output_conv = tf.keras.layers.Conv2D(
+            output_channels, (3, 3), padding='valid',
+            kernel_regularizer=tf.keras.regularizers.l2(gen_l2) if gen_l2 else None
+        )
+        
+    def call(self, x, training=False, return_features=False, pilot_rows=None, pilot_cols=None):
+        x = reflect_padding_2d(x, pad_h=1, pad_w=1)
+        out = self.input_conv(x)
+        
+        block_outputs = {}
+        for i, block in enumerate(self.blocks):
+            out = block(out, training=training)
+            
+            if i + 1 == self.attention_after_block and self.attention_layer is not None:
+                out = self.attention_layer(out, pilot_rows=pilot_rows, pilot_cols=pilot_cols)
+                
+            block_outputs[f'block_{i+1}'] = out
+            
+        out = reflect_padding_2d(out, pad_h=1, pad_w=1)
+        output = self.output_conv(out)
+        
+        features = []
+        for layer_name in self.extract_layers:
+            if layer_name in block_outputs:
+                features.append(block_outputs[layer_name])
+                
+        return output, features
 
 
 class DnCNN_ResNet_Attention(tf.keras.Model):
