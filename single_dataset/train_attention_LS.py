@@ -950,12 +950,14 @@ def main():
     txt_path = os.path.join(save_dir, 'final_epoch.txt')
     os.makedirs(os.path.join(save_dir), exist_ok=True)
     try:
+        elapsed_total = time.perf_counter() - t_start
         with open(txt_path, 'w') as f:
             f.write("=== FINAL EPOCH EVALUATION RESULTS ===\n")
             f.write(f"SNR (dB):             {args.snr}\n")
             f.write(f"Input Type:           {args.input_type}\n")
             f.write(f"Loss Type:            {args.loss_type}\n")
             f.write(f"Standardize:          {args.standardize}\n")
+            f.write(f"Total Execution Time: {elapsed_total:.1f} s\n")
             f.write(f"Best Training Epoch:  {best_epoch}\n\n")
             
             # --- TRAIN ---

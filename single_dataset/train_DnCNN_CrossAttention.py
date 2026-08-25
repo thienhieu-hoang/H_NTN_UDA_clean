@@ -1341,12 +1341,14 @@ def main():
     # Write final_epoch.txt report
     report_path = os.path.join(save_dir, 'final_epoch.txt')
     try:
+        elapsed_total = time.perf_counter() - t_start
         with open(report_path, 'w') as fh:
             fh.write(
                 "========================================================================\n"
                 "FINAL EVALUATION METRICS COMPARISON\n"
                 "========================================================================\n"
-                f"SNR: {args.snr} dB | Input Type: {args.input_type} | SSIM Weight: {args.ssim_weight_start:.3f} -> {args.ssim_weight_end:.3f}\n\n"
+                f"SNR: {args.snr} dB | Input Type: {args.input_type} | SSIM Weight: {args.ssim_weight_start:.3f} -> {args.ssim_weight_end:.3f}\n"
+                f"Total Execution Time: {elapsed_total:.1f} s\n\n"
             )
             
             def write_set_block(set_name, raw_mmse, raw_nmse, raw_nmse_db, raw_ssim,
