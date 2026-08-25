@@ -10,3 +10,4 @@ __pycache__/
 *.out
 *.err
 Distribution/
+single_dataset/trained_models/
