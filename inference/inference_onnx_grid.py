@@ -7,6 +7,7 @@ import numpy as np
 import scipy.io
 import h5py
 import onnxruntime as ort
+import argparse
 
 # ============================================================================
 # CONFIGURATION CONSTANTS
@@ -371,8 +372,19 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             
         source_mat_path = os.path.join(dataset_dir, target_dataset_sub, "matlabNTN.mat")
         if not os.path.exists(source_mat_path):
-            print(f"  [Warning] Dataset file matlabNTN.mat not found at '{source_mat_path}'. Skipping.")
-            continue
+            # Try to search for any other .mat file in the directory
+            target_dir_path = os.path.join(dataset_dir, target_dataset_sub)
+            if os.path.exists(target_dir_path) and os.path.isdir(target_dir_path):
+                mat_files = [f for f in os.listdir(target_dir_path) if f.endswith('.mat') and not f.startswith('inferredChannel')]
+                if mat_files:
+                    source_mat_path = os.path.join(target_dir_path, mat_files[0])
+                    print(f"  [Auto-detect] matlabNTN.mat not found. Found other MAT file: '{source_mat_path}'")
+                else:
+                    print(f"  [Warning] No .mat file found under '{target_dir_path}'. Skipping.")
+                    continue
+            else:
+                print(f"  [Warning] Dataset directory '{target_dir_path}' does not exist. Skipping.")
+                continue
             
         prefix = "LS" if "ls" in sub_lower else ("PRAC" if "prac" in sub_lower else "LI")
         dest_folder_name = f"{prefix}_{snr}dB"
@@ -686,4 +698,36 @@ All variables are saved combined in **`inferredChannel.mat`** inside each target
                 print(f"  [Warning] Failed to write {info_filename}: {e}")
 
 if __name__ == "__main__":
-    run_inference()
+    parser = argparse.ArgumentParser(description="ONNX Batch Inference for MATLAB Channels.")
+    parser.add_argument('--model-dir', type=str, default=MODEL_DIR, help="Model directory containing ONNX file")
+    parser.add_argument('--dataset-dir', type=str, default=DATASET_DIR, help="Dataset directory containing matlabNTN.mat")
+    parser.add_argument('--out-dir', type=str, default=OUT_DIR, help="Output folder (None for in-place)")
+    parser.add_argument('--num-samples', type=str, default=str(NUM_SAMPLES), help="Limit number of samples (None for all)")
+    parser.add_argument('--model-type', type=str, default=MODEL_TYPE, choices=['auto', 'LI', 'LS', 'PRAC'], help="Filter folder types")
+    parser.add_argument('--clip-extrap', type=str, default=CLIP_EXTRAP, help="Extrapolation clipping (auto, true, false)")
+    parser.add_argument('--model-name', type=str, default=MODEL_NAME, help="ONNX model filename")
+    parser.add_argument('--output-key', type=str, default=OUTPUT_KEY, help="MATLAB variable output key")
+    
+    args = parser.parse_args()
+    
+    # Resolve the num_samples None vs Int parsing
+    nsamp = args.num_samples
+    if nsamp.lower() in ['none', 'null', '']:
+        nsamp = None
+    else:
+        try:
+            nsamp = int(nsamp)
+        except ValueError:
+            nsamp = None
+        
+    run_inference(
+        model_dir=args.model_dir,
+        dataset_dir=args.dataset_dir,
+        num_samples=nsamp,
+        model_name=args.model_name,
+        clip_extrap=args.clip_extrap,
+        output_key=args.output_key,
+        out_dir=args.out_dir if args.out_dir not in ['None', 'none', ''] else None,
+        model_type=args.model_type
+    )
+
