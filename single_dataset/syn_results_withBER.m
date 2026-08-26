@@ -25,8 +25,8 @@ USAGE:
 ========================================================================================
 %}
 
-target_dir = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps_LS_Attention_standardize';
-input_types = 'LS';
+target_dir = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LI_DnCNN_CrossAttention_standardize';
+input_types = 'LI';
 synthesize_results(target_dir, input_types);
 
 function results = synthesize_results(target_dir, input_types)
@@ -35,7 +35,7 @@ function results = synthesize_results(target_dir, input_types)
     % 1. LEGEND NAMES, LINE COLORS & MARKERS CONFIGURATION
     % =========================================================================
     % Legend label names
-    LEGEND_OUTPUT = 'LS + Attention';
+    LEGEND_OUTPUT = 'LI + Cross Attention';
     LEGEND_LMMSE  = 'LMMSE Benchmark';
     LEGEND_LI     = 'LI Benchmark';
 
