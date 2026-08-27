@@ -21,14 +21,21 @@
 %
 function results = syn_syn_compare_multiModels(folders, folder_labels, output_folder)
     script_dir = fileparts(mfilename('fullpath'));
-
-    % Default Folders Fallback
-    if nargin < 1 || isempty(folders)
-        folders = { ...
+    if ~isempty(script_dir) && exist(script_dir, 'dir')
+        cd(script_dir);
+    end
+    
+    folders_ = { ...
             'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\LSSequence_Attention_standardize', ...
             'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\LI_Grid_DnCNN', ...
             'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\LS_DnCNN_ResNet_Attention' ...
         };
+    folder_labels_ = {'LS+Attention Inferred', 'LI+DnCNN Inferred', 'LI+Attention+DnCNN Inferred'};
+    output_folder_ = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\syn_2';
+
+    % Default Folders Fallback
+    if nargin < 1 || isempty(folders)
+        folders = folders_;
     end
 
     if ischar(folders) || isstring(folders)
@@ -39,7 +46,7 @@ function results = syn_syn_compare_multiModels(folders, folder_labels, output_fo
 
     % Default Folder Labels Fallback
     if nargin < 2 || isempty(folder_labels)
-        folder_labels = {'LS+Attention Inferred', 'LI+DnCNN Inferred', 'LI+Attention+DnCNN Inferred'};
+        folder_labels = folder_labels_;
     elseif ischar(folder_labels) || isstring(folder_labels)
         folder_labels = {char(folder_labels)};
     end
@@ -52,7 +59,7 @@ function results = syn_syn_compare_multiModels(folders, folder_labels, output_fo
 
     % Default Output Directory
     if nargin < 3 || isempty(output_folder)
-        output_folder = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\syn_2';
+        output_folder = output_folder_;
     end
 
     if ~exist(output_folder, 'dir')

@@ -25,11 +25,14 @@ function results = syn_metrics_withBER(batch_folder, labelname)
         script_dir = pwd;
     end
 
+    batch_folder_ = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LSSequence_standardize';
+    labelname_ = 'LS+Attention Inferred';
+    
     if nargin < 1 || isempty(batch_folder)
-        batch_folder = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LSSequence_standardize';
+        batch_folder = batch_folder_;
     end
     if nargin < 2 || isempty(labelname)
-        labelname = 'LS+Attention Inferred';
+        labelname = labelname_;
     end
 
     % Add paths for helper functions (3 levels up) and BER_cal root (1 level up)
