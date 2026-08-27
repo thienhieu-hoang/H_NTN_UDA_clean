@@ -14,72 +14,94 @@ OVERVIEW:
     consistent, unified benchmark baseline curves on all comparative plots.
 
 USAGE:
-  syn_syn_results()                           % Runs with default configs
-  syn_syn_results(save_path, data_configs)     % Custom output path & dataset configs
+  syn_syn_results_()                                      % Runs with default configs
+  syn_syn_results_(folders)                               % Custom model folders cell array
+  syn_syn_results_(folders, folder_labels)                % Custom folders & legend labels
+  syn_syn_results_(folders, folder_labels, output_folder) % Custom folders, labels, & output path
 ========================================================================================
 %}
+function results = syn_syn_results_(folders, folder_labels, output_folder)
+    if exist('mfilename', 'builtin') && ~isempty(mfilename('fullpath'))
+        script_dir = fileparts(mfilename('fullpath'));
+    else
+        script_dir = pwd;
+    end
+    
+    if ~isempty(script_dir) && exist(script_dir, 'dir')
+        cd(script_dir);
+    end
 
-if exist('mfilename', 'builtin') && ~isempty(mfilename('fullpath'))
-    script_dir = fileparts(mfilename('fullpath'));
-else
-    script_dir = pwd;
-end
+    % Default Parameter Fallbacks
+    folders_ = { ...
+        'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LI_DnCNN_AxialAttention\LI_synthesize', ...
+        'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LI_DnCNN_CrossAttention\LI_synthesize', ...
+        'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LI_DnCNN\LI_synthesize', ...
+        'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LS_Attention_standardize\LS_synthesize' ...
+    };
+    folder_labels_ = { ...
+        'LI + DnCNN + AxialAttention', ...
+        'LI + DnCNN + CrossAttention', ...
+        'LI + DnCNN', ...
+        'LS + Attention' ...
+    };
+    output_folder_ = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\syn\syn2';
 
-path1 = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LI_DnCNN_AxialAttention\LI_synthesize'
-label1 = 'LI + DnCNN + AxialAttention'
+    if nargin < 1 || isempty(folders)
+        folders = folders_;
+    end
 
-path2 = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LI_DnCNN_CrossAttention\LI_synthesize'
-label2 = 'LI + DnCNN + CrossAttention'
+    if ischar(folders) || isstring(folders)
+        folders = {char(folders)};
+    end
 
-path3 = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LI_DnCNN\LI_synthesize'
-label3 = 'LI + DnCNN'
+    num_folders = length(folders);
 
-path4 = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LS_Attention_standardize\LS_synthesize'
-label4 = 'LS + Attention'
+    if nargin < 2 || isempty(folder_labels)
+        folder_labels = folder_labels_;
+    elseif ischar(folder_labels) || isstring(folder_labels)
+        folder_labels = {char(folder_labels)};
+    end
 
-save_path = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\syn\syn2';
-data_configs = { ...
-            struct('path', path1, ...
-                   'label', label1, ...
-                   'color', [0.4940, 0.1840, 0.5560], ... % Purple (#7e2f8e)
-                   'marker', 'd'), ...
-            struct('path', path2, ...
-                   'label', label2, ...
-                   'color', [0.4660, 0.6740, 0.1880], ... % Green (#77ac30)
-                   'marker', 'v'), ...
-            struct('path', path3, ...
-                   'label', label3, ...
-                   'color', [0.8500, 0.3250, 0.0980], ... % Red-Orange (#d95319)
-                   'marker', '^'), ...
-            struct('path', path4, ...
-                   'label', label4, ...
-                   'color', [0.6350, 0.0780, 0.1840], ... % Maroon (#a2142f)
-                   'marker', '>') ...
-        };
-syn_syn_results(save_path, data_configs);
+    % Fill missing labels if necessary
+    for i = (length(folder_labels) + 1):num_folders
+        [~, leaf_name] = fileparts(folders{i});
+        folder_labels{i} = sprintf('Model %d (%s)', i, strrep(leaf_name, '_', ' '));
+    end
 
-function syn_syn_results(save_path, data_configs)
+    if nargin < 3 || isempty(output_folder)
+        output_folder = output_folder_;
+    end
 
     % Ensure output directory exists
-    output_dir = save_path;
-    if ~exist(output_dir, 'dir')
-        mkdir(output_dir);
+    if ~exist(output_folder, 'dir')
+        mkdir(output_folder);
     end
+
+    % Define Color Palette & Styles for Inferred Models (up to 6 colors)
+    model_colors = {
+        [0.8500 0.3250 0.0980], ... % Red-Orange
+        [0.4660 0.6740 0.1880], ... % Green
+        [0.4940 0.1840 0.5560], ... % Purple
+        [0.9290 0.6940 0.1250], ... % Yellow-Orange
+        [0.3010 0.7450 0.9330], ... % Cyan
+        [0.6350 0.0780 0.1840]      % Dark Red
+    };
+    model_markers = {'^', 'v', 'd', '*', 'p', 'h'};
 
     fprintf('========================================================================\n');
     fprintf('  NTN Synthesized Results Comparison & Plot Generator (MATLAB)         \n');
     fprintf('========================================================================\n');
-    fprintf('Output Directory: %s\n', output_dir);
-    fprintf('Configured Datasets: %d\n\n', length(data_configs));
+    fprintf('Output Directory: %s\n', output_folder);
+    fprintf('Configured Datasets: %d\n\n', num_folders);
 
     % =========================================================================
     % 2. LOAD AND PARSE SYNTHESIZED RESULTS (MODELS + BENCHMARKS)
     % =========================================================================
     loaded_data = {};
 
-    for c_idx = 1:length(data_configs)
-        cfg = data_configs{c_idx};
-        mat_path = fullfile(cfg.path, 'synthesized_results.mat');
+    for c_idx = 1:num_folders
+        curr_folder = folders{c_idx};
+        mat_path = fullfile(curr_folder, 'synthesized_results.mat');
 
         if ~exist(mat_path, 'file')
             fprintf('[Warning] File not found: %s\n', mat_path);
@@ -108,19 +130,15 @@ function syn_syn_results(save_path, data_configs)
         ssim_lmmse    = extract_field(mat, {'ssim_lmmse'}, []);
         ber_lmmse     = extract_field(mat, {'ber_lmmse'}, []);
 
-        % Ensure color is RGB 1x3 double
-        if ischar(cfg.color) || isstring(cfg.color)
-            color_rgb = hex2rgb(char(cfg.color));
-        else
-            color_rgb = double(cfg.color);
-        end
+        color_rgb = model_colors{mod(c_idx-1, length(model_colors))+1};
+        marker_char = model_markers{mod(c_idx-1, length(model_markers))+1};
 
         item = struct();
-        item.folder_path = cfg.path;
+        item.folder_path = curr_folder;
         item.mat_path    = mat_path;
-        item.label       = cfg.label;
+        item.label       = folder_labels{c_idx};
         item.color       = color_rgb;
-        item.marker      = cfg.marker;
+        item.marker      = marker_char;
         item.snr         = double(snr(:).');
         item.mmse        = double(mmse(:).');
         item.nmse_db     = double(nmse_db(:).');

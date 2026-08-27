@@ -19,23 +19,30 @@ OVERVIEW:
     - Structural Similarity Index (SSIM).
 
 USAGE:
-  synthesize_results()               % Synthesizes current directory for both 'LI' and 'LS'
-  synthesize_results(target_dir)      % Synthesizes specific target directory
-  synthesize_results(target_dir, {'LI', 'LS'})
+  syn_results_withBER()               % Synthesizes default target folder with default legend
+  syn_results_withBER(target_dir)      % Synthesizes specific target folder with default legend
+  syn_results_withBER(target_dir, legend_output) % Synthesizes specific target folder with custom legend label
 ========================================================================================
 %}
 
-target_dir = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LI_DnCNN_CrossAttention_standardize';
-input_types = 'LI';
-synthesize_results(target_dir, input_types);
+function results = syn_results_withBER(target_dir, legend_output)
+    % Default parameter values
+    target_dir_ = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LI_DnCNN_CrossAttention_standardize';
+    legend_output_ = 'LI+DnCNN+Cross Attention';
 
-function results = synthesize_results(target_dir, input_types)
+    if nargin < 1 || isempty(target_dir)
+        target_dir = target_dir_;
+    end
+
+    if nargin < 2 || isempty(legend_output)
+        legend_output = legend_output_;
+    end
 
     % =========================================================================
     % 1. LEGEND NAMES, LINE COLORS & MARKERS CONFIGURATION
     % =========================================================================
     % Legend label names
-    LEGEND_OUTPUT = 'LI + Cross Attention';
+    LEGEND_OUTPUT = legend_output;
     LEGEND_LMMSE  = 'LMMSE Benchmark';
     LEGEND_LI     = 'LI Benchmark';
 
@@ -61,14 +68,38 @@ function results = synthesize_results(target_dir, input_types)
     else
         script_dir = pwd;
     end
-
-    if nargin < 1 || isempty(target_dir)
-        target_dir = script_dir;
+    
+    if ~isempty(script_dir) && exist(script_dir, 'dir')
+        cd(script_dir);
     end
 
-    if nargin < 2 || isempty(input_types)
-        input_types = {'LI', 'LS'};
-    elseif ischar(input_types) || isstring(input_types)
+    % Auto-detect input types based on actual folders present in target_dir
+    detected_types = {};
+    if exist(target_dir, 'dir')
+        items = dir(target_dir);
+        has_li = false;
+        has_ls = false;
+        for k = 1:length(items)
+            if items(k).isdir && ~strcmp(items(k).name, '.') && ~strcmp(items(k).name, '..')
+                sname_lower = lower(items(k).name);
+                if startsWith(sname_lower, 'li_')
+                    has_li = true;
+                elseif startsWith(sname_lower, 'ls_')
+                    has_ls = true;
+                end
+            end
+        end
+        if has_li, detected_types{end+1} = 'LI'; end
+        if has_ls, detected_types{end+1} = 'LS'; end
+    end
+    
+    if ~isempty(detected_types)
+        input_types = detected_types;
+    else
+        input_types = {'LI'}; % Default fallback
+    end
+
+    if ischar(input_types) || isstring(input_types)
         input_types = {char(input_types)};
     end
 
