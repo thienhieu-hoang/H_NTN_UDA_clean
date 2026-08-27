@@ -1,24 +1,14 @@
-
-folders = {'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\LSSequence_Attention_standardize',
-    'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\LI_Grid_DnCNN',
-    'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\LS_DnCNN_ResNet_Attention'};
-folder_labels = {'LS+Attention Inferred', 'LI+DnCNN Inferred', 'LI+Attention+DnCNN Inferred'};
-output_folder = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\syn_2';
-
-plot_synthesized_comparison(folders, folder_labels, output_folder)
-
-function results = plot_synthesized_comparison(folders, folder_labels, output_folder)
-% PLOT_SYNTHESIZED_COMPARISON Load synthesized_results.mat from multiple folders
+% SYN_SYN_COMPARE_MULTIMODELS Load synthesized_results.mat from multiple folders
 % and plot performance comparisons (MSE, NMSE, SSIM, BER) across approaches.
 %
 % Synthesizes and plots comparison curves for multiple inferred models alongside
 % averaged benchmark curves (LI Benchmark Average and MMSE Benchmark Average).
 %
 % Usage:
-%   plot_synthesized_comparison()
-%   plot_synthesized_comparison(folders)
-%   plot_synthesized_comparison(folders, folder_labels)
-%   plot_synthesized_comparison(folders, folder_labels, output_folder)
+%   syn_syn_compare_multiModels()
+%   syn_syn_compare_multiModels(folders)
+%   syn_syn_compare_multiModels(folders, folder_labels)
+%   syn_syn_compare_multiModels(folders, folder_labels, output_folder)
 %
 % Inputs:
 %   folders       - Cell array of folder paths containing synthesized_results.mat
@@ -28,16 +18,16 @@ function results = plot_synthesized_comparison(folders, folder_labels, output_fo
 %
 % Output:
 %   results       - Struct with all synthesized data and averaged benchmarks.
-
+%
+function results = syn_syn_compare_multiModels(folders, folder_labels, output_folder)
     script_dir = fileparts(mfilename('fullpath'));
 
     % Default Folders Fallback
     if nargin < 1 || isempty(folders)
         folders = { ...
-            fullfile(script_dir, 'inference_samples', 'DUR100ns_2p18G__A100ns_2p18G', ...
-                'Attention_DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps'), ...
-            fullfile(script_dir, 'inferences_batch', ...
-                'DUR100__A100_2p18e9_600km_30kHz_LI_Grid') ...
+            'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\LSSequence_Attention_standardize', ...
+            'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\LI_Grid_DnCNN', ...
+            'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\LS_DnCNN_ResNet_Attention' ...
         };
     end
 
@@ -49,7 +39,7 @@ function results = plot_synthesized_comparison(folders, folder_labels, output_fo
 
     % Default Folder Labels Fallback
     if nargin < 2 || isempty(folder_labels)
-        folder_labels = {'LS+Attention Inferred', 'LI+DnCNN Inferred'};
+        folder_labels = {'LS+Attention Inferred', 'LI+DnCNN Inferred', 'LI+Attention+DnCNN Inferred'};
     elseif ischar(folder_labels) || isstring(folder_labels)
         folder_labels = {char(folder_labels)};
     end
@@ -62,7 +52,7 @@ function results = plot_synthesized_comparison(folders, folder_labels, output_fo
 
     % Default Output Directory
     if nargin < 3 || isempty(output_folder)
-        output_folder = fullfile(script_dir, 'synthesized_comparison_output');
+        output_folder = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz\syn_2';
     end
 
     if ~exist(output_folder, 'dir')

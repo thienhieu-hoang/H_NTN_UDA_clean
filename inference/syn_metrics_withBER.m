@@ -13,16 +13,12 @@ OVERVIEW:
        and empirical covariance matrix R_hh derived from H_perfect.
 
 USAGE:
-  BER_metrics_compare()                   % Evaluates all batch folders in inferences_batch
-  BER_metrics_compare('folder_name')       % Evaluates specific batch folder
+  syn_metrics_withBER()                   % Evaluates default batch folder
+  syn_metrics_withBER('folder_name', 'label') % Evaluates specific batch folder with custom label
 ========================================================================================
 %}
 
-folder = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LSSequence_standardize';
-labelname = 'LS+Attention Inferred';
-BER_metrics_compare(folder, labelname)
-
-function results = BER_metrics_compare(batch_folder, labelname)
+function results = syn_metrics_withBER(batch_folder, labelname)
     if exist('mfilename', 'builtin') && ~isempty(mfilename('fullpath'))
         script_dir = fileparts(mfilename('fullpath'));
     else
@@ -30,9 +26,8 @@ function results = BER_metrics_compare(batch_folder, labelname)
     end
 
     if nargin < 1 || isempty(batch_folder)
-        batch_folder = script_dir;
+        batch_folder = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LSSequence_standardize';
     end
-
     if nargin < 2 || isempty(labelname)
         labelname = 'LS+Attention Inferred';
     end
