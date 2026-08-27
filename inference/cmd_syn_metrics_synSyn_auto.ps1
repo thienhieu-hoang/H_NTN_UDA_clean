@@ -34,7 +34,7 @@ if ($models.Length -ne $labels.Length) {
 }
 
 # 5. Git polling configuration
-$triggerFile = Join-Path (Join-Path $inferenceRootDir $inferredPath) "done.md"
+$triggerFile = Join-Path (Join-Path $inferenceRootDir $inferredPath) "done_infer.md"
 $checkIntervalSeconds = 1200  # Poll every 20 minutes
 
 Write-Output "Polling git pull every 20 minutes..."
@@ -43,7 +43,7 @@ Write-Output "Looking for trigger file: $triggerFile`n"
 while ($true) {
     # Check if trigger file exists locally first (for immediate manual trigger or if already pulled)
     if (Test-Path $triggerFile) {
-        Write-Output "`n[TRIGGER DETECTED] Found done.md inside target folder!"
+        Write-Output "`n[TRIGGER DETECTED] Found done_infer.md inside target folder!"
         Write-Output "Starting MATLAB batch evaluation loop..."
 
         # Loop through each model and run the MATLAB evaluation function
@@ -118,7 +118,7 @@ while ($true) {
         }
 
         # Clean up trigger file to prevent running again on next loop
-        Write-Output "Cleaning up trigger file done.md..."
+        Write-Output "Cleaning up trigger file done_infer.md..."
         Remove-Item $triggerFile
         git add $triggerFile
         git commit -m "Local MATLAB evaluations completed"
