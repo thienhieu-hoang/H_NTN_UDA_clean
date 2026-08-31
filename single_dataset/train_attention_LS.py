@@ -267,33 +267,67 @@ def find_any_mat_file(base_dir: str) -> str:
     return None
 
 def get_data_path(data_root: str, snr: int, is_test_code: bool = False) -> str:
-    if data_root:
-        base_dir = os.path.join(data_root, SNR_FOLDER_MAP[snr])
-        mat_file = find_any_mat_file(base_dir)
-        if mat_file:
-            return mat_file
-
-    # Autodetect path relative to this script
+    """
+    Robustly locate the .mat data file for the requested SNR, supporting:
+    - SNR folder variations: 'SNR_-10dB', '-10dB', 'SNR_-10', '-10'
+    - Relative paths from workspace root or script directory
+    - Scenario name substring matching (e.g., 'A100_2p18e9...' matching 'sampleWiseDoppler_wGeometry_A100_...')
+    """
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    searches = [
-        os.path.join(script_dir, '..', '..', 'Gene_NTN_Data', 'Sionna', 'OpenNTN', 'channel_wGeometry', 'results'),
-        os.path.join(script_dir, '..', 'Gene_NTN_Data', 'Sionna', 'OpenNTN', 'channel_wGeometry', 'results'),
-        os.path.join(script_dir, 'Gene_NTN_Data', 'Sionna', 'OpenNTN', 'channel_wGeometry', 'results'),
-    ]
-    for s_dir in searches:
-        full_dir = os.path.join(s_dir, DATA_FOLDER_NAME, SNR_FOLDER_MAP[snr])
-        mat_file = find_any_mat_file(full_dir)
-        if mat_file:
-            return mat_file
+    project_root = os.path.abspath(os.path.join(script_dir, '..'))
+
+    candidate_roots = []
+    if data_root:
+        if os.path.isabs(data_root):
+            candidate_roots.append(data_root)
+        else:
+            candidate_roots.append(os.path.abspath(data_root))
+            candidate_roots.append(os.path.join(project_root, data_root))
+            candidate_roots.append(os.path.join(script_dir, data_root))
             
-    # Try DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps
-    for s_dir in searches:
-        full_dir = os.path.join(s_dir, 'DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps', SNR_FOLDER_MAP[snr])
-        mat_file = find_any_mat_file(full_dir)
+            # Scenario substring search in generatedChan/
+            for parent in [os.path.join(project_root, 'generatedChan', 'MATLAB'),
+                           os.path.join(project_root, 'generatedChan', 'OpenNTN')]:
+                if os.path.isdir(parent):
+                    base_name = os.path.basename(data_root.rstrip('\\/'))
+                    for entry in os.listdir(parent):
+                        if base_name in entry:
+                            candidate_roots.append(os.path.join(parent, entry))
+
+    # Add default fallback directories
+    candidate_roots.extend([
+        os.path.join(project_root, 'generatedChan', 'OpenNTN', DATA_FOLDER_NAME),
+        os.path.join(project_root, 'generatedChan', 'OpenNTN', 'DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps'),
+        os.path.join(project_root, 'generatedChan', 'MATLAB', 'sampleWiseDoppler_wGeometry_A100_2p18e9_600km_70deg_30kHz')
+    ])
+
+    snr_variations = [
+        f"SNR_{snr}dB",
+        f"{snr}dB",
+        f"SNR_{snr}",
+        f"{snr}"
+    ]
+
+    for root in candidate_roots:
+        if not os.path.isdir(root):
+            continue
+        # Try each SNR subfolder variation
+        for snr_var in snr_variations:
+            snr_dir = os.path.join(root, snr_var)
+            if os.path.isdir(snr_dir):
+                mat_file = find_any_mat_file(snr_dir)
+                if mat_file:
+                    return mat_file
+        # Direct check inside root if no SNR subfolders
+        mat_file = find_any_mat_file(root)
         if mat_file:
             return mat_file
 
-    raise FileNotFoundError(f"Could not find any .mat data files for SNR={snr} in any searched location.")
+    raise FileNotFoundError(
+        f"Could not find any .mat data files for SNR={snr} in any searched location.\n"
+        f"Searched roots: {candidate_roots}"
+    )
+
 
 def load_mat_data(mat_path: str, input_type: str):
     try:

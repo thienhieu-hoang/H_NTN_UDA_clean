@@ -36,15 +36,17 @@ function results = syn_syn_results_(folders, folder_labels, output_folder)
         'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LI_DnCNN_AxialAttention\LI_synthesize', ...
         'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LI_DnCNN_CrossAttention\LI_synthesize', ...
         'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LI_DnCNN\LI_synthesize', ...
-        'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LS_Attention_standardize\LS_synthesize' ...
+        'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LS_Attention_standardize\LS_synthesize', ...
+        'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LI_cGAN\LI_synthesize' ...
     };
     folder_labels_ = { ...
         'LI + DnCNN + AxialAttention', ...
         'LI + DnCNN + CrossAttention', ...
         'LI + DnCNN', ...
-        'LS + Attention' ...
+        'LS + Attention', ...
+        'LI + cGAN' ...
     };
-    output_folder_ = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\syn\syn2';
+    output_folder_ = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\syn\syn3';
 
     if nargin < 1 || isempty(folders)
         folders = folders_;
@@ -215,7 +217,7 @@ function results = syn_syn_results_(folders, folder_labels, output_folder)
     % =========================================================================
     % 4. SAVE COMBINED COMPARATIVE MAT FILE WITH AVERAGED BENCHMARKS
     % =========================================================================
-    mat_out_path = fullfile(output_dir, 'overall_synthesized_comparison.mat');
+    mat_out_path = fullfile(output_folder, 'overall_synthesized_comparison.mat');
     export_struct = struct();
 
     for i = 1:length(loaded_data)
@@ -242,20 +244,20 @@ function results = syn_syn_results_(folders, folder_labels, output_folder)
     export_struct.avg_lmmse_ssim    = avg_lmmse_ssim;
     export_struct.avg_lmmse_ber     = avg_lmmse_ber;
 
-    export_struct.plotted_labels = cellfun(@(x) x.label, data_configs, 'UniformOutput', false);
-    export_struct.plotted_paths  = cellfun(@(x) x.path, data_configs, 'UniformOutput', false);
+    export_struct.plotted_labels = cellfun(@(x) x.label, loaded_data, 'UniformOutput', false);
+    export_struct.plotted_paths  = cellfun(@(x) x.folder_path, loaded_data, 'UniformOutput', false);
 
     save(mat_out_path, '-struct', 'export_struct');
     fprintf('\nSaved combined comparison MAT file to: %s\n', mat_out_path);
 
     % Save text configuration list
-    txt_out_path = fullfile(output_dir, 'plotted_folders.txt');
+    txt_out_path = fullfile(output_folder, 'plotted_folders.txt');
     fid = fopen(txt_out_path, 'w');
     if fid ~= -1
         fprintf(fid, 'Folders plotted in this comparison:\n');
-        for idx = 1:length(data_configs)
-            fprintf(fid, '  - Label: %s\n', data_configs{idx}.label);
-            fprintf(fid, '    Path:  %s\n', data_configs{idx}.path);
+        for idx = 1:length(loaded_data)
+            fprintf(fid, '  - Label: %s\n', loaded_data{idx}.label);
+            fprintf(fid, '    Path:  %s\n', loaded_data{idx}.folder_path);
         end
         fclose(fid);
     end
@@ -304,7 +306,7 @@ function results = syn_syn_results_(folders, folder_labels, output_folder)
     legend(h_lines, h_labels, 'Location', 'best', 'FontSize', 10);
     hold off;
 
-    mmse_pdf_path = fullfile(output_dir, 'overall_mmse_comparison.pdf');
+    mmse_pdf_path = fullfile(output_folder, 'overall_mmse_comparison.pdf');
     save_pdf_figure(fig1, mmse_pdf_path);
     fprintf('Saved MMSE plot to: %s\n', mmse_pdf_path);
     close(fig1);
@@ -348,7 +350,7 @@ function results = syn_syn_results_(folders, folder_labels, output_folder)
     legend(h_lines, h_labels, 'Location', 'best', 'FontSize', 10);
     hold off;
 
-    nmse_pdf_path = fullfile(output_dir, 'overall_nmse_comparison.pdf');
+    nmse_pdf_path = fullfile(output_folder, 'overall_nmse_comparison.pdf');
     save_pdf_figure(fig2, nmse_pdf_path);
     fprintf('Saved NMSE (dB) plot to: %s\n', nmse_pdf_path);
     close(fig2);
@@ -392,7 +394,7 @@ function results = syn_syn_results_(folders, folder_labels, output_folder)
     legend(h_lines, h_labels, 'Location', 'best', 'FontSize', 10);
     hold off;
 
-    ssim_pdf_path = fullfile(output_dir, 'overall_ssim_comparison.pdf');
+    ssim_pdf_path = fullfile(output_folder, 'overall_ssim_comparison.pdf');
     save_pdf_figure(fig3, ssim_pdf_path);
     fprintf('Saved SSIM plot to: %s\n', ssim_pdf_path);
     close(fig3);
@@ -446,7 +448,7 @@ function results = syn_syn_results_(folders, folder_labels, output_folder)
         legend(h_lines, h_labels, 'Location', 'southwest', 'FontSize', 10);
         hold off;
 
-        ber_pdf_path = fullfile(output_dir, 'overall_ber_comparison.pdf');
+        ber_pdf_path = fullfile(output_folder, 'overall_ber_comparison.pdf');
         save_pdf_figure(fig4, ber_pdf_path);
         fprintf('Saved BER plot to: %s\n', ber_pdf_path);
         close(fig4);
@@ -455,10 +457,10 @@ function results = syn_syn_results_(folders, folder_labels, output_folder)
     % =========================================================================
     % 5. GENERATE MARKDOWN SUMMARY COMMENT REPORT (.md)
     % =========================================================================
-    save_markdown_summary(output_dir, loaded_data, avg_li_nmse_db, avg_lmmse_nmse_db, ...
+    save_markdown_summary(output_folder, loaded_data, avg_li_nmse_db, avg_lmmse_nmse_db, ...
         avg_li_ssim, avg_lmmse_ssim, avg_li_mmse, avg_lmmse_mmse, avg_li_ber, avg_lmmse_ber);
 
-    fprintf('\nAll plots, MAT comparisons, and Markdown summary saved to: %s\n', output_dir);
+    fprintf('\nAll plots, MAT comparisons, and Markdown summary saved to: %s\n', output_folder);
 end
 
 %% Helper function to calculate average across rows
@@ -471,10 +473,10 @@ function avg_row = calculate_average_row(matrix_in)
 end
 
 %% Helper function to write Markdown Summary Report (.md)
-function save_markdown_summary(output_dir, loaded_data, avg_li_nmse_db, avg_lmmse_nmse_db, ...
+function save_markdown_summary(output_folder, loaded_data, avg_li_nmse_db, avg_lmmse_nmse_db, ...
     avg_li_ssim, avg_lmmse_ssim, avg_li_mmse, avg_lmmse_mmse, avg_li_ber, avg_lmmse_ber)
 
-    md_path = fullfile(output_dir, 'overall_synthesis_summary.md');
+    md_path = fullfile(output_folder, 'overall_synthesis_summary.md');
     fid = fopen(md_path, 'w');
     if fid == -1
         warning('Could not create Markdown summary report file at %s', md_path);
@@ -482,7 +484,7 @@ function save_markdown_summary(output_dir, loaded_data, avg_li_nmse_db, avg_lmms
     end
 
     fprintf(fid, '# Overall Synthesized Results & Dataset Directory Notes\n\n');
-    fprintf(fid, '**Generated Output Directory:**\n`%s`\n\n', output_dir);
+    fprintf(fid, '**Generated Output Directory:**\n`%s`\n\n', output_folder);
     fprintf(fid, 'This document notes the exact source folders, file paths, visual configurations (labels, colors, markers), and metric performance summary for all datasets included in the comparative plots.\n\n');
 
     fprintf(fid, '> **Note on Benchmark Averaging:**\n');

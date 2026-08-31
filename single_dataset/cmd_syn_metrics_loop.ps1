@@ -20,18 +20,24 @@ Write-Output "==================================================================
 
 # 1. Define root folder for trained models and the trained dataset parameter
 $modelRootDir = "C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset"
-$trainedDataset = "DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps"
+$trainedDataset = "A100_2p18e9_600km_70deg_30kHz"
 
 # 2. List the model subfolders to evaluate
 $models = @(
-    "LI_DnCNN_CrossAttention_standardize_copy",
-    "LS_Attention_copy"
+    "LI_cGAN",
+    "LI_cGAN_standardize",
+    "LI_DnCNN",
+    "LI_DnCNN_AxialAttention",
+    "LI_DnCNN_CrossAttention"
 )
 
 # Corresponding labels/legend names for evaluation
 $labels = @(
-    "LI+DnCNN+CrossAttention",
-    "LS+Attention"
+    "LI+cGAN",
+    "LI+cGAN",
+    "LI+DnCNN",
+    "LI+DnCNN+AxialTransformer",
+    "LI+DnCNN+CrossTransformer"
 )
 
 # Verify list lengths match
