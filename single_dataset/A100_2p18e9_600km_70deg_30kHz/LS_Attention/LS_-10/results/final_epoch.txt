@@ -3,29 +3,29 @@ SNR (dB):             -10
 Input Type:           ls
 Loss Type:            combined
 Standardize:          False
-Total Execution Time: 233.0 s
+Total Execution Time: 259.3 s
 Best Training Epoch:  200
 
 --- TRAIN SET METRICS ---
 LI Benchmark MMSE:    5.806976e-15
-HA02 Output MMSE:     1.705271e-17
+HA02 Output MMSE:     2.876674e-17
 LI Benchmark NMSE:    2.057460e+01 (13.13 dB)
-HA02 Output NMSE:     6.041917e-02 (-12.19 dB)
+HA02 Output NMSE:     1.019229e-01 (-9.92 dB)
 LI Benchmark SSIM:    0.0040
-HA02 Output SSIM:     0.7720
+HA02 Output SSIM:     0.6607
 
 --- VALIDATION SET METRICS ---
 LI Benchmark MMSE:    5.905783e-15
-HA02 Output MMSE:     1.157562e-16
+HA02 Output MMSE:     1.239288e-16
 LI Benchmark NMSE:    2.131863e+01 (13.29 dB)
-HA02 Output NMSE:     4.178555e-01 (-3.79 dB)
+HA02 Output NMSE:     4.473569e-01 (-3.49 dB)
 LI Benchmark SSIM:    0.0042
-HA02 Output SSIM:     0.3261
+HA02 Output SSIM:     0.3323
 
 --- TEST SET METRICS ---
 LI Benchmark MMSE:    5.648849e-15
-HA02 Output MMSE:     1.091960e-16
+HA02 Output MMSE:     1.179059e-16
 LI Benchmark NMSE:    2.037401e+01 (13.09 dB)
-HA02 Output NMSE:     3.938433e-01 (-4.05 dB)
+HA02 Output NMSE:     4.252577e-01 (-3.71 dB)
 LI Benchmark SSIM:    0.0042
-HA02 Output SSIM:     0.3793
+HA02 Output SSIM:     0.3648
