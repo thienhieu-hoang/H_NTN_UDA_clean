@@ -1,14 +1,14 @@
-Inference completed successfully on 09/01/2026 11:26:36
+Inference completed successfully on 09/01/2026 11:30:37
 
 Folder:
 A100__DUR100_2p18e9_600km_30kHz
 
 Models:
-- LI_cGAN
-- LI_DnCNN
-- LI_DnCNN_Attention
+- LI_DnCNN_AxialAttention
+- LI_DnCNN_CrossAttention
+- LS_Attention_standardize
 
 Labels:
-- LI+cGAN Inferred
-- LI+DnCNN Inferred
-- LI+DnCNN+Attention Inferred
+- LI+DnCNN+AxialAttention Inferred
+- LI+DnCNN+CrossAttention Inferred
+- LS+Attention Std Inferred
