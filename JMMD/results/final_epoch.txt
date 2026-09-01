@@ -1,0 +1,17 @@
+=== FINAL EPOCH EVALUATION RESULTS ===
+SNR (dB):             5
+Input Type:           LS
+Domain Adaptation:    JMMD cGAN (joint) UDA
+JMMD Layers:          ['d4']
+Gaussian Kernels:     5 scales (mul=2.0)
+Total Execution Time: 10.1 s
+
+--- SOURCE DOMAIN TEST METRICS ---
+Model Output MMSE:    1.535508e-18
+Model Output NMSE:    6.62 dB
+Model Output SSIM:    0.0105
+
+--- TARGET DOMAIN TEST METRICS ---
+Model Output MMSE:    1.535508e-18
+Model Output NMSE:    6.62 dB
+Model Output SSIM:    0.0105

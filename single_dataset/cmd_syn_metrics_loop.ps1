@@ -46,6 +46,12 @@ if ($models.Length -ne $labels.Length) {
     Exit
 }
 
+# Automatically locate official MATLAB CLI launcher (prevents GUI detachment)
+$matlabExe = "matlab"
+if (Test-Path "C:\Program Files\MATLAB\R2025a\bin\matlab.exe") {
+    $matlabExe = "C:\Program Files\MATLAB\R2025a\bin\matlab.exe"
+}
+
 # 3. Loop through each model and run the MATLAB evaluation function
 for ($i = 0; $i -lt $models.Length; $i++) {
     $model = $models[$i]
@@ -68,9 +74,9 @@ for ($i = 0; $i -lt $models.Length; $i++) {
     Write-Output "------------------------------------------------------------"
     
     # Invoke MATLAB in headless batch mode, calling the syn_results_withBER function
-    $escapedFolder = $evalFolder -replace '\\', '\\'
+    $escapedFolder = $evalFolder.Replace('\', '/')
     
-    matlab -batch "syn_results_withBER('$escapedFolder', '$label')"
+    & $matlabExe -batch "syn_results_withBER('$escapedFolder', '$label')"
     
     if ($LASTEXITCODE -eq 0) {
         Write-Output "Evaluation for '$model' completed successfully.`n"

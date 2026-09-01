@@ -184,13 +184,17 @@ def deStandardize(x_normd, x_mean, x_std):
 
 def complx2real(H_struct):
     """
-    Convert structured complex ndarray of shape [N, S, T] with dtype [('real', float), ('imag', float)]
+    Convert complex ndarray or structured complex ndarray of shape [N, S, T]
     into a float tensor of shape [N, 2, S, T], separating real and imaginary parts.
     """
-    real = H_struct['real'].astype(np.float32)  # shape: (Nsamp, n_subcs, n_symbs)
-    imag = H_struct['imag'].astype(np.float32)  # shape: (Nsamp, n_subcs, n_symbs)
+    if hasattr(H_struct, 'dtype') and H_struct.dtype.names is not None and 'real' in H_struct.dtype.names:
+        real = H_struct['real'].astype(np.float32)
+        imag = H_struct['imag'].astype(np.float32)
+    else:
+        real = np.real(H_struct).astype(np.float32)
+        imag = np.imag(H_struct).astype(np.float32)
     
-    # Stack along new dimension (axis=1) => shape: (Nsamp, 2, n_subcs, n_symbs)
+    # Stack along axis=1 => shape: (Nsamp, 2, n_subcs, n_symbs)
     combined = np.stack([real, imag], axis=1)
     
     # Convert to TensorFlow tensor
