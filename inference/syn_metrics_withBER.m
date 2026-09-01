@@ -25,8 +25,8 @@ function results = syn_metrics_withBER(batch_folder, labelname)
         script_dir = pwd;
     end
 
-    batch_folder_ = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LSSequence_standardize';
-    labelname_ = 'LS+Attention Inferred';
+    batch_folder_ = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\A100__DUR100_2p18e9_600km_30kHz';
+    labelname_ = 'LI+cGAN Inferred';
     
     if nargin < 1 || isempty(batch_folder)
         batch_folder = batch_folder_;

@@ -67,9 +67,15 @@ while ($true) {
             Write-Output "  Plot Label  : $label"
             Write-Output "------------------------------------------------------------"
             
+            # Automatically locate official MATLAB CLI launcher (prevents GUI detachment)
+            $matlabExe = "matlab"
+            if (Test-Path "C:\Program Files\MATLAB\R2025a\bin\matlab.exe") {
+                $matlabExe = "C:\Program Files\MATLAB\R2025a\bin\matlab.exe"
+            }
+
             # Invoke MATLAB in headless batch mode, calling the syn_metrics_withBER function
-            $escapedFolder = $evalFolder -replace '\\', '\\'
-            matlab -batch "syn_metrics_withBER('$escapedFolder', '$label')"
+            $escapedFolder = $evalFolder.Replace('\', '/')
+            & $matlabExe -batch "syn_metrics_withBER('$escapedFolder', '$label')"
             
             if ($LASTEXITCODE -eq 0) {
                 Write-Output "Evaluation for '$model' completed successfully.`n"
@@ -95,7 +101,7 @@ while ($true) {
         }
         $nextNum = $maxNum + 1
         $outputFolder = Join-Path $parentPath "syn_$nextNum"
-        $escapedOutFolder = $outputFolder -replace '\\', '\\'
+        $escapedOutFolder = $outputFolder.Replace('\', '/')
 
         Write-Output "------------------------------------------------------------"
         Write-Output "Running Comparison Plots across all Models..."
@@ -103,12 +109,12 @@ while ($true) {
         Write-Output "------------------------------------------------------------"
 
         # Build MATLAB cell arrays for folders and labels
-        $matlabFoldersCell = "{" + (($models | ForEach-Object { "'$( (Join-Path $parentPath $_) -replace '\\', '\\' )'" }) -join ", ") + "}"
+        $matlabFoldersCell = "{" + (($models | ForEach-Object { "'$( (Join-Path $parentPath $_).Replace('\', '/') )'" }) -join ", ") + "}"
         $matlabLabelsCell = "{" + (($labels | ForEach-Object { "'$_'" }) -join ", ") + "}"
         $compareCmd = "syn_syn_compare_multiModels($matlabFoldersCell, $matlabLabelsCell, '$escapedOutFolder')"
 
         # Run overall comparison in MATLAB
-        matlab -batch $compareCmd
+        & $matlabExe -batch $compareCmd
 
         if ($LASTEXITCODE -eq 0) {
             Write-Output "Overall comparison completed successfully.`n"
