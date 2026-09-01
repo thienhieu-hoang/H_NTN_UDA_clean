@@ -13,26 +13,26 @@ Write-Output "==================================================================
 $inferenceRootDir = "C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference"
 
 # 2. Define the chosen inferred runs directory
-$inferredPath = "DUR100__A100_2p18e9_600km_30kHz"
+$inferredPath = "A100__DUR100_2p18e9_600km_30kHz"
 
 # 3. List the model subfolders to evaluate
 $models = @(
-    "LI_cGAN",
-    "LI_DnCNN",
-    "LI_DnCNN_Attention"
-    # "LI_DnCNN_AxialAttention",
-    # "LI_DnCNN_CrossAttention",
+    # "LI_cGAN",
+    # "LI_DnCNN",
+    "LI_DnCNN_Attention",
+    "LI_DnCNN_AxialAttention",
+    "LI_DnCNN_CrossAttention"
     # "LS_Attention",
     # "LS_Attention_standardize"
 )
 
 # 4. List the corresponding legend/plot label names for each model
 $labels = @(
-    "LI+cGAN Inferred",
-    "LI+DnCNN Inferred",
-    "LI+DnCNN+Attention Inferred"
-    # "LI+DnCNN+AxialAttention Inferred",
-    # "LI+DnCNN+CrossAttention Inferred",
+    # "LI+cGAN Inferred",
+    # "LI+DnCNN Inferred",
+    "LI+DnCNN+Attention Inferred",
+    "LI+DnCNN+AxialAttention Inferred",
+    "LI+DnCNN+CrossAttention Inferred"
     # "LS+Attention Inferred",
     # "LS+Attention+Standardize Inferred"
 )
@@ -41,6 +41,12 @@ $labels = @(
 if ($models.Length -ne $labels.Length) {
     Write-Error "Error: The number of models ($($models.Length)) does not match the number of labels ($($labels.Length))!"
     Exit
+}
+
+# Automatically locate official MATLAB CLI launcher (prevents GUI detachment)
+$matlabExe = "matlab"
+if (Test-Path "C:\Program Files\MATLAB\R2025a\bin\matlab.exe") {
+    $matlabExe = "C:\Program Files\MATLAB\R2025a\bin\matlab.exe"
 }
 
 # 5. Loop through each model and run the MATLAB evaluation function
@@ -64,15 +70,15 @@ for ($i = 0; $i -lt $models.Length; $i++) {
     Write-Output "  Plot Label  : $label"
     Write-Output "------------------------------------------------------------"
     
-    # Invoke MATLAB in headless batch mode, calling the syn_metrics_withBER function
-    # Note: we double escape the backslashes inside single quotes for MATLAB strings
-    $escapedFolder = $evalFolder -replace '\\', '\\'
+    # Format folder path for MATLAB
+    $escapedFolder = $evalFolder.Replace('\', '/')
     
-    matlab -batch "syn_metrics_withBER('$escapedFolder', '$label')"
+    & $matlabExe -batch "syn_metrics_withBER('$escapedFolder', '$label')"
     
     if ($LASTEXITCODE -eq 0) {
         Write-Output "Evaluation for '$model' completed successfully.`n"
-    } else {
+    }
+    else {
         Write-Warning "Evaluation for '$model' failed with exit code $LASTEXITCODE.`n"
     }
 }
