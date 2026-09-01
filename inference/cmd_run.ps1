@@ -1,0 +1,3 @@
+.\cmd_auto_inference_synResults_A_DUR1.ps1
+.\cmd_auto_inference_synResults_A_DUR2.ps1
+.\cmd_auto_inference_synResults_A_DUR3.ps1

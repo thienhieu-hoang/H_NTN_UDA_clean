@@ -32,33 +32,33 @@ Write-Output "==================================================================
 Write-Output " Automated ONNX Inference & MATLAB Evaluation Pipeline (PowerShell)"
 Write-Output "======================================================================`n"
 
-# 1. Define (Target) dataset directory (Common for all runs)
-$datasetDir = "C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\generatedChan\OpenNTN\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps"
-
-# 2. Define root folder for trained models and the trained dataset parameter
+# 1. Define root folder for trained models and the trained dataset parameter (Source)
 $modelRootDir = "C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset"
 $trainedDataset = "DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps"
 
+# 2. Define (Target) dataset directory (Common for all runs)
+$datasetDir = "C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\generatedChan\MATLAB\A100_2p18e9_600km_70deg_30kHz"
+
 # 3. List the models - the names of subfolders
 $models = @(
-    # "LI_cGAN",
-    # "LI_DnCNN",
-    # "LI_DnCNN_Attention"
+    "LI_cGAN",
+    "LI_DnCNN",
+    "LI_DnCNN_Attention"
     # "LI_DnCNN_AxialAttention",
     # "LI_DnCNN_CrossAttention",
-    "LS_Attention",
-    "LS_Attention_standardize"
+    # "LS_Attention",
+    # "LS_Attention_standardize"
 )
 
 # Corresponding labels/legend names for evaluation
 $labels = @(
-    # "LI+cGAN Inferred",
-    # "LI+DnCNN Inferred",
-    # "LI+DnCNN+Attention Inferred"
+    "LI+cGAN Inferred",
+    "LI+DnCNN Inferred",
+    "LI+DnCNN+Attention Inferred"
     # "LI+DnCNN+AxialAttention Inferred",
     # "LI+DnCNN+CrossAttention Inferred",
-    "LS+Attention Inferred",
-    "LS+Attention Std Inferred"
+    # "LS+Attention Inferred",
+    # "LS+Attention Std Inferred"
 )
 
 # 4. Define root folder for outputs and the folder to save results

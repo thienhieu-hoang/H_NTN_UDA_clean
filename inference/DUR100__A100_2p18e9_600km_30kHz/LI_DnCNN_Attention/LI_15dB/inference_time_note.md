@@ -2,5 +2,5 @@
 
 * **Model/Subfolder:** `LI_15`
 * **Total Samples in Batch:** 1024
-* **Total Inference Time (including Pre + Postprocessing):** 15.8761 seconds
-* **Average Inference Time per Sample:** 15.5040 milliseconds (0.015504 seconds)
+* **Total Inference Time (including Pre + Postprocessing):** 14.4842 seconds
+* **Average Inference Time per Sample:** 14.1447 milliseconds (0.014145 seconds)

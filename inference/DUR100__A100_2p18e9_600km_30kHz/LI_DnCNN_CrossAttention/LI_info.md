@@ -1,17 +1,17 @@
 # LI Inference Run Reference
 
 - **Source Trained Model Folder**: single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps\LI_DnCNN_CrossAttention
-- **Target Dataset Folder**: DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps
+- **Target Dataset Folder**: MATLAB\A100_2p18e9_600km_70deg_30kHz
 
 ## Inference Performance Summary (LI)
 | SNR (dB) | MMSE | NMSE | NMSE (dB) | SSIM |
 |----------|------|------|-----------|------|
-| -10 | 2.631368e-18 | 9.934755 | 9.97 dB | 0.310197 |
-| -5 | 7.156682e-19 | 2.688251 | 4.29 dB | 0.518470 |
-| +0 | 2.454508e-19 | 0.973768 | -0.12 dB | 0.680521 |
-| +5 | 8.669637e-20 | 0.349759 | -4.56 dB | 0.804712 |
-| +10 | 2.624866e-20 | 0.102854 | -9.88 dB | 0.901175 |
-| +15 | 7.455490e-21 | 0.026813 | -15.72 dB | 0.960922 |
+| -10 | 3.303605e-15 | 11.850560 | 10.74 dB | 0.072180 |
+| -5 | 1.048699e-15 | 3.715959 | 5.70 dB | 0.030304 |
+| +0 | 4.665201e-16 | 1.668452 | 2.22 dB | 0.023098 |
+| +5 | 1.618617e-16 | 0.545900 | -2.63 dB | 0.049959 |
+| +10 | 3.837336e-17 | 0.140065 | -8.54 dB | 0.195001 |
+| +15 | 9.651688e-18 | 0.038061 | -14.20 dB | 0.451130 |
 
 ## Inferred MAT File Field Reference
 All variables are saved combined in **`inferredChannel.mat`** inside each target `LI_xdB` subfolder.
