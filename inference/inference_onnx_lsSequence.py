@@ -7,6 +7,7 @@ import numpy as np
 import scipy.io
 import h5py
 import onnxruntime as ort
+import argparse
 
 # ============================================================================
 # CONFIGURATION CONSTANTS
@@ -15,12 +16,58 @@ import onnxruntime as ort
 MODEL_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps_LS_Attention_standardize"
 DATASET_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\generatedChan\MATLAB\sampleWiseDoppler_wGeometry_A100_2p18e9_600km_70deg_30kHz"
 OUT_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_LSSequence_standardize"
-MODEL_NAME = "best_model.onnx"
+MODEL_NAME = "auto"          # "auto" adaptively detects best_net.onnx, best_model.onnx, final_model.onnx, final_net.onnx, etc.
 CLIP_EXTRAP = "auto"       # "auto", "true", or "false" (auto detects true if "clip" or "LI" is in model_dir or subdirs)
 STANDARDIZE = "auto"       # "auto" (detects if "standardize" is in model_dir name), True, or False      ## False hope = using min-max Scaler
 OUTPUT_KEY = "auto"        # "auto" saves variable as "H_infer", otherwise custom string
 NUM_SAMPLES = 512           # Integer (e.g. 512, 64) or None to process all samples in the dataset
 # ============================================================================
+
+def find_onnx_model(sub_dir, preferred_name="auto"):
+    """
+    Adaptively finds an ONNX model in sub_dir or sub_dir/results.
+    Checks preferred_name (if not 'auto'), then best_net.onnx, best_model.onnx,
+    final_model.onnx, final_net.onnx, and falls back to any *.onnx file found.
+    """
+    candidates = []
+    if preferred_name and str(preferred_name).lower() not in ["auto", "none", ""]:
+        candidates.append(preferred_name)
+    
+    default_candidates = [
+        "best_net.onnx",
+        "best_model.onnx",
+        "final_model.onnx",
+        "final_net.onnx"
+    ]
+    for c in default_candidates:
+        if c not in candidates:
+            candidates.append(c)
+            
+    search_dirs = [
+        os.path.join(sub_dir, "results"),
+        sub_dir
+    ]
+    
+    # 1. Search for named candidates in priority order
+    for c in candidates:
+        for s_dir in search_dirs:
+            p = os.path.join(s_dir, c)
+            if os.path.isfile(p):
+                return p
+                
+    # 2. Fallback: Search for any .onnx file in the directories
+    for s_dir in search_dirs:
+        if os.path.isdir(s_dir):
+            onnx_files = [f for f in os.listdir(s_dir) if f.lower().endswith('.onnx')]
+            if onnx_files:
+                # Prioritize 'best' -> 'final' -> alphabetical
+                onnx_files.sort(key=lambda x: (
+                    0 if "best" in x.lower() else (1 if "final" in x.lower() else 2),
+                    x.lower()
+                ))
+                return os.path.join(s_dir, onnx_files[0])
+                
+    return None
 
 def extract_snr(folder_name):
     """
@@ -100,26 +147,51 @@ def de_standardize(x_normd, x_mean, x_std):
     return x_normd * x_std_b + x_mean_b
 
 
-def match_original_shape(H_est, source_mat_path):
+def load_source_mat_file(mat_path):
     """
-    Finds H_perfect (or any reference 3D channel array) in the source file,
+    Loads a .mat file supporting both MATLAB v7 (scipy.io.loadmat)
+    and MATLAB v7.3 HDF5 (h5py.File), returning a dictionary of {var_name: numpy_array}.
+    """
+    try:
+        raw_dict = scipy.io.loadmat(mat_path)
+        data_dict = {}
+        for k, v in raw_dict.items():
+            if not k.startswith('__'):
+                data_dict[k] = v
+        return data_dict
+    except NotImplementedError:
+        # File is MATLAB v7.3 (HDF5 format)
+        data_dict = {}
+        with h5py.File(mat_path, 'r') as f:
+            for k in f.keys():
+                if not k.startswith('#') and not k.startswith('__'):
+                    val = f[k][()]
+                    data_dict[k] = h5_to_complex(val)
+        return data_dict
+
+def match_original_shape(H_est, source_data_or_path):
+    """
+    Finds H_perfect (or any reference 3D channel array) in the dataset,
     and transposes H_est (which has shape (N, 132, 14)) to match its layout exactly.
     """
-    import h5py
-    with h5py.File(source_mat_path, 'r') as f:
-        ref_shape = None
-        for k in ['H_perfect', 'H_perfect_ori', 'H_li', 'H_prac']:
-            if k in f and len(f[k].shape) == 3:
-                ref_shape = f[k].shape
-                break
-        if ref_shape is None:
-            for k in f.keys():
-                if len(f[k].shape) == 3:
-                    ref_shape = f[k].shape
-                    break
-                    
+    if isinstance(source_data_or_path, dict):
+        data_dict = source_data_or_path
+    else:
+        data_dict = load_source_mat_file(source_data_or_path)
+
+    ref_shape = None
+    for k in ['H_perfect', 'H_perfect_ori', 'H_li', 'H_prac']:
+        if k in data_dict and hasattr(data_dict[k], 'shape') and len(data_dict[k].shape) == 3:
+            ref_shape = data_dict[k].shape
+            break
     if ref_shape is None:
-        return np.transpose(H_est, (0, 2, 1))
+        for k in data_dict.keys():
+            if hasattr(data_dict[k], 'shape') and len(data_dict[k].shape) == 3:
+                ref_shape = data_dict[k].shape
+                break
+                
+    if ref_shape is None:
+        return H_est
         
     # Case 1: reference shape is (N, 14, 132) -> transpose to (0, 2, 1)
     if ref_shape[1] == 14 and ref_shape[2] == 132:
@@ -129,12 +201,12 @@ def match_original_shape(H_est, source_mat_path):
         return H_est
     # Case 3: reference shape is (14, 132, N) -> transpose to (2, 1, 0)
     elif ref_shape[0] == 14 and ref_shape[1] == 132:
-        return np.transpose(H_est, (2, 0, 1))
+        return np.transpose(H_est, (2, 1, 0))
     # Case 4: reference shape is (132, 14, N) -> transpose to (1, 2, 0)
     elif ref_shape[0] == 132 and ref_shape[1] == 14:
         return np.transpose(H_est, (1, 2, 0))
         
-    return np.transpose(H_est, (0, 2, 1))
+    return H_est
 
 def load_mat_data(mat_path: str, input_type: str):
     try:
@@ -329,7 +401,7 @@ def compute_ssim_batch(H_pred, H_true):
         
     return float(np.mean(ssim_list))
 
-def save_inferred_to_mat(dest_path, source_path, key, H_est, metrics_dict, num_samples=None):
+def save_inferred_to_mat(dest_path, source_path_or_dict, key, H_est, metrics_dict, num_samples=None):
     """
     Saves the entire contents of the original source_path MAT file combined
     with the inferred channel and metrics to dest_path using scipy.io.savemat.
@@ -337,37 +409,39 @@ def save_inferred_to_mat(dest_path, source_path, key, H_est, metrics_dict, num_s
     """
     save_dict = {}
     
-    # 1. Read all variables from the original HDF5 MAT file
-    with h5py.File(source_path, 'r') as f:
-        # Determine the original number of samples
-        N_orig = None
-        for k in ['H_perfect', 'H_perfect_ori', 'H_li', 'H_prac']:
-            if k in f:
-                N_orig = f[k].shape[0]
+    if isinstance(source_path_or_dict, dict):
+        orig_dict = source_path_or_dict
+    else:
+        orig_dict = load_source_mat_file(source_path_or_dict)
+
+    # Determine the original number of samples
+    N_orig = None
+    for k in ['H_perfect', 'H_perfect_ori', 'H_li', 'H_prac']:
+        if k in orig_dict and hasattr(orig_dict[k], 'shape') and len(orig_dict[k].shape) >= 1:
+            N_orig = orig_dict[k].shape[0]
+            break
+    if N_orig is None:
+        for k, v in orig_dict.items():
+            if hasattr(v, 'shape') and len(v.shape) >= 1:
+                N_orig = v.shape[0]
                 break
-        if N_orig is None:
-            # Fallback scan
-            for k in f.keys():
-                if hasattr(f[k], 'shape') and len(f[k].shape) >= 1:
-                    N_orig = f[k].shape[0]
-                    break
-        
-        # Load and slice each variable
-        for k in f.keys():
-            if k.startswith('#') or k.startswith('__'):
-                continue
-                
-            val = f[k][()]
+    
+    # Load and slice each variable
+    for k, val in orig_dict.items():
+        if k.startswith('#') or k.startswith('__'):
+            continue
             
-            # Convert complex compound types to standard NumPy complex arrays
-            val = h5_to_complex(val)
-            
-            # Slice sample-dependent variables
-            if num_samples is not None and N_orig is not None:
-                if hasattr(val, 'shape') and len(val.shape) >= 1 and val.shape[0] == N_orig:
+        # Slice sample-dependent variables
+        if num_samples is not None and N_orig is not None:
+            if hasattr(val, 'shape') and len(val.shape) >= 1:
+                if val.shape[0] == N_orig:
                     val = val[:num_samples]
-                    
-            save_dict[k] = val
+                elif len(val.shape) == 3 and val.shape[2] == N_orig:
+                    val = val[:, :, :num_samples]
+                elif len(val.shape) == 2 and val.shape[1] == N_orig:
+                    val = val[:, :num_samples]
+                
+        save_dict[k] = val
 
     # 2. Append new inference variables and metrics
     save_dict[key] = H_est
@@ -445,22 +519,14 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             
         print(f"\nProcessing subfolder: {sub} (Detected SNR: {snr} dB)")
         
-        # 1. Search for ONNX model
-        model_paths_to_check = [
-            os.path.join(model_dir, sub, "results", model_name),
-            os.path.join(model_dir, sub, model_name)
-        ]
-        onnx_path = None
-        for path in model_paths_to_check:
-            if os.path.exists(path):
-                onnx_path = path
-                break
-                
+        # 1. Search for ONNX model adaptively
+        onnx_path = find_onnx_model(os.path.join(model_dir, sub), preferred_name=model_name)
         if onnx_path is None:
-            print(f"  [Warning] ONNX model '{model_name}' not found under {sub}. Skipping.")
+            print(f"  [Warning] ONNX model not found under {sub} (checked: best_net, best_model, final_model, final_net, etc.). Skipping.")
             continue
             
-        print(f"  Found ONNX model: {onnx_path}")
+        detected_model_name = os.path.basename(onnx_path)
+        print(f"  Found ONNX model: {onnx_path} (Adaptive: '{detected_model_name}')")
         
         # 2. Determine input key based on folder name prefix
         # Default maps LI -> H_li, LS -> H_ls, PRAC -> H_prac
@@ -489,11 +555,23 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             
         source_mat_path = os.path.join(dataset_dir, target_dataset_sub, "matlabNTN.mat")
         if not os.path.exists(source_mat_path):
-            print(f"  [Warning] Dataset file matlabNTN.mat not found at '{source_mat_path}'. Skipping.")
-            continue
+            target_dir_path = os.path.join(dataset_dir, target_dataset_sub)
+            if os.path.exists(target_dir_path) and os.path.isdir(target_dir_path):
+                mat_files = [f for f in os.listdir(target_dir_path) if f.endswith('.mat') and not f.startswith('inferredChannel')]
+                if mat_files:
+                    source_mat_path = os.path.join(target_dir_path, mat_files[0])
+                    print(f"  [Auto-detect] matlabNTN.mat not found. Found other MAT file: '{source_mat_path}'")
+                else:
+                    print(f"  [Warning] No .mat file found under '{target_dir_path}'. Skipping.")
+                    continue
+            else:
+                print(f"  [Warning] Dataset directory '{target_dir_path}' does not exist. Skipping.")
+                continue
             
+        prefix = "LS" if "ls" in sub_lower else ("PRAC" if "prac" in sub_lower else "LI")
+        dest_folder_name = f"{prefix}_{snr}dB"
         if out_dir is not None:
-            dest_folder = os.path.join(out_dir, target_dataset_sub)
+            dest_folder = os.path.join(out_dir, dest_folder_name)
             os.makedirs(dest_folder, exist_ok=True)
             dest_mat_path = os.path.join(dest_folder, "inferredChannel.mat")
         else:
@@ -696,4 +774,36 @@ All variables are saved combined in **`inferredChannel.mat`** inside each target
             print(f"  [Warning] Failed to write info.md: {e}")
 
 if __name__ == "__main__":
-    run_inference()
+    parser = argparse.ArgumentParser(description="ONNX Batch Inference for LS Sequence Channel Estimation Models.")
+    parser.add_argument('--model-dir', type=str, default=MODEL_DIR, help="Model directory containing ONNX file")
+    parser.add_argument('--dataset-dir', type=str, default=DATASET_DIR, help="Dataset directory containing target MAT files")
+    parser.add_argument('--out-dir', type=str, default=OUT_DIR, help="Output folder (None for in-place)")
+    parser.add_argument('--num-samples', type=str, default=str(NUM_SAMPLES), help="Limit number of samples (None for all)")
+    parser.add_argument('--model-type', type=str, default="auto", help="Filter folder types (for compatibility)")
+    parser.add_argument('--clip-extrap', type=str, default=CLIP_EXTRAP, help="Extrapolation clipping (auto, true, false)")
+    parser.add_argument('--standardize', type=str, default=STANDARDIZE, help="Standardization mode (auto, true, false)")
+    parser.add_argument('--model-name', type=str, default=MODEL_NAME, help="ONNX model filename or 'auto'")
+    parser.add_argument('--output-key', type=str, default=OUTPUT_KEY, help="MATLAB variable output key")
+    
+    args = parser.parse_args()
+    
+    # Resolve the num_samples None vs Int parsing
+    nsamp = args.num_samples
+    if nsamp.lower() in ['none', 'null', '']:
+        nsamp = None
+    else:
+        try:
+            nsamp = int(nsamp)
+        except ValueError:
+            nsamp = None
+        
+    run_inference(
+        model_dir=args.model_dir,
+        dataset_dir=args.dataset_dir,
+        num_samples=nsamp,
+        model_name=args.model_name,
+        clip_extrap=args.clip_extrap,
+        standardize=args.standardize,
+        output_key=args.output_key,
+        out_dir=args.out_dir if args.out_dir not in ['None', 'none', ''] else None
+    )

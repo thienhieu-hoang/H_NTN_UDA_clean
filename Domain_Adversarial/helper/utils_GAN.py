@@ -1900,4 +1900,20 @@ def load_checkpoint(model, model_path, sub_folder, epoch_load, optimizer=None, d
     return gen_optimizer, disc_optimizer, domain_optimizer
             
 #####################
-            
+
+# Re-export CORAL and JMMD helpers from JMMD.helper.utils_GAN if available
+try:
+    from JMMD.helper.utils_GAN import (
+        GlobalPoolingCORALLoss,
+        HybridCORALLoss,
+        train_step_wgan_gp_coral,
+        val_step_wgan_gp_coral,
+        train_step_wgan_gp_coral_residual,
+        val_step_wgan_gp_coral_residual,
+        train_step_wgan_gp_source_only_residual,
+        val_step_wgan_gp_source_only_residual,
+        save_checkpoint_jmmd,
+        WeightScheduler
+    )
+except ImportError:
+    pass

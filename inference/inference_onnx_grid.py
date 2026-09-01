@@ -16,12 +16,58 @@ import argparse
 MODEL_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset\DnCNN_Attention_DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps"
 DATASET_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\generatedChan\MATLAB\sampleWiseDoppler_wGeometry_A100_2p18e9_600km_70deg_30kHz"
 OUT_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\DUR100__A100_2p18e9_600km_30kHz_DnCNN_ResNet_Attention"
-MODEL_NAME = "best_net.onnx"
+MODEL_NAME = "auto"          # "auto" adaptively detects best_net.onnx, best_model.onnx, final_model.onnx, final_net.onnx, etc.
 CLIP_EXTRAP = "auto"       # "auto", "true", or "false" (auto detects if "clip" is in model_dir name)
 OUTPUT_KEY = "auto"        # "auto" saves variable as "H_infer", otherwise custom string
 NUM_SAMPLES = 64           # Integer (e.g. 512, 64) or None to process all samples in the dataset
 MODEL_TYPE = "LS"          # "auto" (process all), "LI" (only LI subfolders), or "LS" (only LS subfolders)
 # ============================================================================
+
+def find_onnx_model(sub_dir, preferred_name="auto"):
+    """
+    Adaptively finds an ONNX model in sub_dir or sub_dir/results.
+    Checks preferred_name (if not 'auto'), then best_net.onnx, best_model.onnx,
+    final_model.onnx, final_net.onnx, and falls back to any *.onnx file found.
+    """
+    candidates = []
+    if preferred_name and str(preferred_name).lower() not in ["auto", "none", ""]:
+        candidates.append(preferred_name)
+    
+    default_candidates = [
+        "best_net.onnx",
+        "best_model.onnx",
+        "final_model.onnx",
+        "final_net.onnx"
+    ]
+    for c in default_candidates:
+        if c not in candidates:
+            candidates.append(c)
+            
+    search_dirs = [
+        os.path.join(sub_dir, "results"),
+        sub_dir
+    ]
+    
+    # 1. Search for named candidates in priority order
+    for c in candidates:
+        for s_dir in search_dirs:
+            p = os.path.join(s_dir, c)
+            if os.path.isfile(p):
+                return p
+                
+    # 2. Fallback: Search for any .onnx file in the directories
+    for s_dir in search_dirs:
+        if os.path.isdir(s_dir):
+            onnx_files = [f for f in os.listdir(s_dir) if f.lower().endswith('.onnx')]
+            if onnx_files:
+                # Prioritize 'best' -> 'final' -> alphabetical
+                onnx_files.sort(key=lambda x: (
+                    0 if "best" in x.lower() else (1 if "final" in x.lower() else 2),
+                    x.lower()
+                ))
+                return os.path.join(s_dir, onnx_files[0])
+                
+    return None
 
 def extract_snr(folder_name):
     """
@@ -78,26 +124,68 @@ def de_min_max(x_normd, x_min, x_max, lower_range=-1):
         return x_normd * scale[:, np.newaxis, np.newaxis, :] + x_min[:, np.newaxis, np.newaxis, :]
 
 
-def match_original_shape(H_est, source_mat_path):
+def load_source_mat_file(mat_path):
     """
-    Finds H_perfect (or any reference 3D channel array) in the source file,
-    and transposes H_est (which has shape (N, 132, 14)) to match its layout exactly.
+    Loads a .mat file supporting both MATLAB v7 (scipy.io.loadmat)
+    and MATLAB v7.3 HDF5 (h5py.File), returning a dictionary of {var_name: numpy_array}.
     """
-    import h5py
-    with h5py.File(source_mat_path, 'r') as f:
-        ref_shape = None
-        for k in ['H_perfect', 'H_perfect_ori', 'H_li', 'H_prac']:
-            if k in f and len(f[k].shape) == 3:
-                ref_shape = f[k].shape
-                break
-        if ref_shape is None:
+    try:
+        raw_dict = scipy.io.loadmat(mat_path)
+        data_dict = {}
+        for k, v in raw_dict.items():
+            if not k.startswith('__'):
+                data_dict[k] = v
+        return data_dict
+    except NotImplementedError:
+        # File is MATLAB v7.3 (HDF5 format)
+        data_dict = {}
+        with h5py.File(mat_path, 'r') as f:
             for k in f.keys():
-                if len(f[k].shape) == 3:
-                    ref_shape = f[k].shape
-                    break
-                    
+                if not k.startswith('#') and not k.startswith('__'):
+                    val = f[k][()]
+                    data_dict[k] = h5_to_complex(val)
+        return data_dict
+
+def align_channel_to_N_132_14(arr):
+    """
+    Standardizes a 3D complex channel array into shape (N, 132, 14).
+    Handles all MATLAB dimension permutations:
+      - (N, 132, 14) -> (N, 132, 14)
+      - (N, 14, 132) -> (N, 132, 14) via (0, 2, 1)
+      - (14, 132, N) -> (N, 132, 14) via (2, 1, 0)
+      - (132, 14, N) -> (N, 132, 14) via (2, 0, 1)
+    """
+    if not isinstance(arr, np.ndarray) or arr.ndim != 3:
+        return arr
+    s = arr.shape
+    if s[1] == 132 and s[2] == 14:
+        return arr
+    if s[1] == 14 and s[2] == 132:
+        return np.transpose(arr, (0, 2, 1))
+    if s[0] == 14 and s[1] == 132:
+        return np.transpose(arr, (2, 1, 0))
+    if s[0] == 132 and s[1] == 14:
+        return np.transpose(arr, (2, 0, 1))
+    return arr
+
+def match_original_shape(H_est, data_dict):
+    """
+    Finds H_perfect (or any reference 3D channel array) in the dataset,
+    and transposes H_est (which has shape (N, 132, 14)) to match its original layout exactly.
+    """
+    ref_shape = None
+    for k in ['H_perfect', 'H_perfect_ori', 'H_li', 'H_prac']:
+        if k in data_dict and hasattr(data_dict[k], 'shape') and len(data_dict[k].shape) == 3:
+            ref_shape = data_dict[k].shape
+            break
     if ref_shape is None:
-        return np.transpose(H_est, (0, 2, 1))
+        for k in data_dict.keys():
+            if hasattr(data_dict[k], 'shape') and len(data_dict[k].shape) == 3:
+                ref_shape = data_dict[k].shape
+                break
+                
+    if ref_shape is None:
+        return H_est
         
     # Case 1: reference shape is (N, 14, 132) -> transpose to (0, 2, 1)
     if ref_shape[1] == 14 and ref_shape[2] == 132:
@@ -107,12 +195,13 @@ def match_original_shape(H_est, source_mat_path):
         return H_est
     # Case 3: reference shape is (14, 132, N) -> transpose to (2, 1, 0)
     elif ref_shape[0] == 14 and ref_shape[1] == 132:
-        return np.transpose(H_est, (2, 0, 1))
+        return np.transpose(H_est, (2, 1, 0))
     # Case 4: reference shape is (132, 14, N) -> transpose to (1, 2, 0)
     elif ref_shape[0] == 132 and ref_shape[1] == 14:
         return np.transpose(H_est, (1, 2, 0))
         
-    return np.transpose(H_est, (0, 2, 1))
+    return H_est
+
 
 def clip_sample_np(sample, row_min, row_max, col_min, col_max):
     """
@@ -145,18 +234,19 @@ def clip_batch_np(x, pilot_bounds):
         out[i] = clip_sample_np(x[i], row_min, row_max, col_min, col_max)
     return out
 
-def get_perfect_channel(f, input_key):
+def get_perfect_channel(data_dict, input_key):
     """
-    Finds the perfect reference channel dataset in the HDF5 file.
+    Finds the perfect reference channel dataset in the loaded data dictionary.
     """
-    if 'H_perfect' in f:
-        return h5_to_complex(f['H_perfect'][()])
-    if 'H_perfect_ori' in f:
-        return h5_to_complex(f['H_perfect_ori'][()])
-    for k in f.keys():
-        if k != input_key and len(f[k].shape) == 3:
-            return h5_to_complex(f[k][()])
+    if 'H_perfect' in data_dict:
+        return data_dict['H_perfect']
+    if 'H_perfect_ori' in data_dict:
+        return data_dict['H_perfect_ori']
+    for k in data_dict.keys():
+        if k != input_key and hasattr(data_dict[k], 'shape') and len(data_dict[k].shape) == 3:
+            return data_dict[k]
     raise KeyError("Perfect channel label not found in dataset file.")
+
 
 def compute_mmse(H_pred, H_true):
     """Mean-squared error between predicted and true complex channels."""
@@ -215,7 +305,7 @@ def compute_ssim_batch(H_pred, H_true):
         
     return float(np.mean(ssim_list))
 
-def save_inferred_to_mat(dest_path, source_path, key, H_est, metrics_dict, num_samples=None):
+def save_inferred_to_mat(dest_path, source_path_or_dict, key, H_est, metrics_dict, num_samples=None):
     """
     Saves the entire contents of the original source_path MAT file combined
     with the inferred channel and metrics to dest_path using scipy.io.savemat.
@@ -223,37 +313,40 @@ def save_inferred_to_mat(dest_path, source_path, key, H_est, metrics_dict, num_s
     """
     save_dict = {}
     
-    # 1. Read all variables from the original HDF5 MAT file
-    with h5py.File(source_path, 'r') as f:
-        # Determine the original number of samples
-        N_orig = None
-        for k in ['H_perfect', 'H_perfect_ori', 'H_li', 'H_prac']:
-            if k in f:
-                N_orig = f[k].shape[0]
+    if isinstance(source_path_or_dict, dict):
+        orig_dict = source_path_or_dict
+    else:
+        orig_dict = load_source_mat_file(source_path_or_dict)
+
+    # Determine the original number of samples
+    N_orig = None
+    for k in ['H_perfect', 'H_perfect_ori', 'H_li', 'H_prac']:
+        if k in orig_dict and hasattr(orig_dict[k], 'shape') and len(orig_dict[k].shape) >= 1:
+            N_orig = orig_dict[k].shape[0]
+            break
+    if N_orig is None:
+        for k, v in orig_dict.items():
+            if hasattr(v, 'shape') and len(v.shape) >= 1:
+                N_orig = v.shape[0]
                 break
-        if N_orig is None:
-            # Fallback scan
-            for k in f.keys():
-                if hasattr(f[k], 'shape') and len(f[k].shape) >= 1:
-                    N_orig = f[k].shape[0]
-                    break
-        
-        # Load and slice each variable
-        for k in f.keys():
-            if k.startswith('#') or k.startswith('__'):
-                continue
-                
-            val = f[k][()]
+    
+    # Load and slice each variable
+    for k, val in orig_dict.items():
+        if k.startswith('#') or k.startswith('__'):
+            continue
             
-            # Convert complex compound types to standard NumPy complex arrays
-            val = h5_to_complex(val)
-            
-            # Slice sample-dependent variables
-            if num_samples is not None and N_orig is not None:
-                if hasattr(val, 'shape') and len(val.shape) >= 1 and val.shape[0] == N_orig:
+        # Slice sample-dependent variables
+        if num_samples is not None and N_orig is not None:
+            if hasattr(val, 'shape') and len(val.shape) >= 1:
+                if val.shape[0] == N_orig:
                     val = val[:num_samples]
-                    
-            save_dict[k] = val
+                elif len(val.shape) == 3 and val.shape[2] == N_orig:
+                    val = val[:, :, :num_samples]
+                elif len(val.shape) == 2 and val.shape[1] == N_orig:
+                    val = val[:, :num_samples]
+                
+        save_dict[k] = val
+
 
     # 2. Append new inference variables and metrics
     save_dict[key] = H_est
@@ -266,6 +359,7 @@ def save_inferred_to_mat(dest_path, source_path, key, H_est, metrics_dict, num_s
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
     scipy.io.savemat(dest_path, save_dict)
     print(f"  [SUCCESS] Saved combined MAT file to: {dest_path}")
+
 
 def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_SAMPLES,
                   model_name=MODEL_NAME, clip_extrap=CLIP_EXTRAP, output_key=OUTPUT_KEY,
@@ -328,22 +422,14 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             
         print(f"\nProcessing subfolder: {sub} (Detected SNR: {snr} dB)")
         
-        # 1. Search for ONNX model
-        model_paths_to_check = [
-            os.path.join(model_dir, sub, "results", model_name),
-            os.path.join(model_dir, sub, model_name)
-        ]
-        onnx_path = None
-        for path in model_paths_to_check:
-            if os.path.exists(path):
-                onnx_path = path
-                break
-                
+        # 1. Search for ONNX model adaptively
+        onnx_path = find_onnx_model(os.path.join(model_dir, sub), preferred_name=model_name)
         if onnx_path is None:
-            print(f"  [Warning] ONNX model '{model_name}' not found under {sub}. Skipping.")
+            print(f"  [Warning] ONNX model not found under {sub} (checked: best_net, best_model, final_model, final_net, etc.). Skipping.")
             continue
             
-        print(f"  Found ONNX model: {onnx_path}")
+        detected_model_name = os.path.basename(onnx_path)
+        print(f"  Found ONNX model: {onnx_path} (Adaptive: '{detected_model_name}')")
         
         # 2. Determine input key based on folder name prefix
         # Default maps LI -> H_li, LS -> H_ls, PRAC -> H_prac
@@ -402,79 +488,75 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
 
         # 4. Load dataset
         try:
-            with h5py.File(mat_path, 'r') as f:
-                # Resolve key name for LS if needed
-                if "ls" in sub_lower:
-                    ls_key = "H_ls_pilots"
-                    if ls_key not in f:
-                        for alt in ["H_ls_pilots", "H_ls_pilots_ori", "H_LS_comp", "H_LS_full"]:
-                            if alt in f:
-                                ls_key = alt
-                                break
-                    input_key = ls_key
+            f = load_source_mat_file(mat_path)
 
-                if input_key not in f:
-                    print(f"    [Error] Key '{input_key}' not found in {mat_path}. Skipping SNR {snr}.")
+            # Resolve key name for LS if needed
+            if "ls" in sub_lower:
+                ls_key = "H_ls_pilots"
+                if ls_key not in f:
+                    for alt in ["H_ls_pilots", "H_ls_pilots_ori", "H_LS_comp", "H_LS_full"]:
+                        if alt in f:
+                            ls_key = alt
+                            break
+                input_key = ls_key
+
+            if input_key not in f:
+                print(f"    [Error] Key '{input_key}' not found in {mat_path}. Skipping SNR {snr}.")
+                continue
+            
+            H_perf_complex = align_channel_to_N_132_14(get_perfect_channel(f, input_key))
+
+            # Check for LS vs LI/PRAC loading
+            if "ls" in sub_lower:
+                # Sparse grid reconstruction for LS
+                if 'pilot_rows' not in f or 'pilot_cols' not in f:
+                    print(f"    [Error] Sparse grid reconstruction keys (pilot_rows/pilot_cols) not found in {mat_path}. Skipping.")
                     continue
+                pilot_rows = np.squeeze(f['pilot_rows']).astype(int) - 1
+                pilot_cols = np.squeeze(f['pilot_cols']).astype(int) - 1
                 
-                H_perf_complex = get_perfect_channel(f, input_key)
-                if H_perf_complex.ndim == 3:
-                    if H_perf_complex.shape[1] == 14 and H_perf_complex.shape[2] == 132:
-                        H_perf_complex = np.transpose(H_perf_complex, (0, 2, 1))
+                H_pilots = f[input_key]
+                N_samples = H_perf_complex.shape[0]
+                if H_pilots.shape[0] != N_samples and H_pilots.shape[1] == N_samples:
+                    H_pilots = H_pilots.T
+                    
+                n_subc = H_perf_complex.shape[1]
+                n_symb = H_perf_complex.shape[2]
+                
+                H_in_complex = np.zeros((N_samples, n_subc, n_symb), dtype=np.complex128)
+                for i in range(N_samples):
+                    H_in_complex[i, pilot_rows, pilot_cols] = H_pilots[i, :]
+                    
+                orig_shape = H_in_complex.shape
+            else:
+                H_in_complex = align_channel_to_N_132_14(f[input_key])
+                orig_shape = H_in_complex.shape
 
-                # Check for LS vs LI/PRAC loading
-                if "ls" in sub_lower:
-                    # Sparse grid reconstruction for LS
-                    if 'pilot_rows' not in f or 'pilot_cols' not in f:
-                        print(f"    [Error] Sparse grid reconstruction keys (pilot_rows/pilot_cols) not found in {mat_path}. Skipping.")
-                        continue
-                    pilot_rows = np.squeeze(f['pilot_rows'][()]).astype(int) - 1
-                    pilot_cols = np.squeeze(f['pilot_cols'][()]).astype(int) - 1
-                    
-                    H_pilots = h5_to_complex(f[input_key][()])
-                    N_samples = H_perf_complex.shape[0]
-                    if H_pilots.shape[0] != N_samples and H_pilots.shape[1] == N_samples:
-                        H_pilots = H_pilots.T
-                        
-                    n_subc = H_perf_complex.shape[1]
-                    n_symb = H_perf_complex.shape[2]
-                    
-                    H_in_complex = np.zeros((N_samples, n_subc, n_symb), dtype=np.complex128)
-                    for i in range(N_samples):
-                        H_in_complex[i, pilot_rows, pilot_cols] = H_pilots[i, :]
-                        
-                    orig_shape = H_in_complex.shape
+            if num_samples is not None:
+                if num_samples <= 0:
+                    print(f"    [Error] num-samples must be positive (got {num_samples}). Skipping.")
+                    continue
+                if num_samples > H_in_complex.shape[0]:
+                    print(f"    [Warning] num-samples ({num_samples}) is larger than dataset size ({H_in_complex.shape[0]}). Using all samples.")
                 else:
-                    H_in_dataset = f[input_key][()]
-                    orig_shape = H_in_dataset.shape
-                    H_in_complex = h5_to_complex(H_in_dataset)
-                    
-                    if H_in_complex.ndim == 3:
-                        if H_in_complex.shape[1] == 14 and H_in_complex.shape[2] == 132:
-                            H_in_complex = np.transpose(H_in_complex, (0, 2, 1))
+                    H_in_complex = H_in_complex[:num_samples]
+                    H_perf_complex = H_perf_complex[:num_samples]
+                    print(f"    Sliced dataset to first {num_samples} samples.")
+            
+            N_samples, n_subc, n_symb = H_in_complex.shape
+            print(f"    Loaded input '{input_key}' of shape {H_in_complex.shape} and label H_perfect of shape {H_perf_complex.shape}")
 
-                if num_samples is not None:
-                    if num_samples <= 0:
-                        print(f"    [Error] num-samples must be positive (got {num_samples}). Skipping.")
-                        continue
-                    if num_samples > H_in_complex.shape[0]:
-                        print(f"    [Warning] num-samples ({num_samples}) is larger than dataset size ({H_in_complex.shape[0]}). Using all samples.")
-                    else:
-                        H_in_complex = H_in_complex[:num_samples]
-                        H_perf_complex = H_perf_complex[:num_samples]
-                        print(f"    Sliced dataset to first {num_samples} samples.")
-                
-                N_samples, n_subc, n_symb = H_in_complex.shape
-                print(f"    Loaded input '{input_key}' of shape {H_in_complex.shape} and label H_perfect of shape {H_perf_complex.shape}")
-
-                # Load pilot bounds for clipping
-                pilot_rows = np.squeeze(f['pilot_rows'][()]).astype(int) - 1
-                pilot_cols = np.squeeze(f['pilot_cols'][()]).astype(int) - 1
+            # Load pilot bounds for clipping
+            if 'pilot_rows' in f and 'pilot_cols' in f:
+                pilot_rows = np.squeeze(f['pilot_rows']).astype(int) - 1
+                pilot_cols = np.squeeze(f['pilot_cols']).astype(int) - 1
                 row_min = int(np.min(pilot_rows))
                 row_max = int(np.max(pilot_rows))
                 col_min = int(np.min(pilot_cols))
                 col_max = int(np.max(pilot_cols))
                 pilot_bounds = (row_min, row_max + 1, col_min, col_max + 1)
+            else:
+                pilot_bounds = (0, n_subc, 0, n_symb)
         except Exception as e:
             print(f"    [Error] Failed to load dataset {mat_path}: {e}. Skipping.")
             continue
@@ -556,7 +638,7 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
         H_est = x_denormed[..., 0] + 1j * x_denormed[..., 1]
         
         # Match original shape dynamically to ensure 100% same layout
-        H_est_to_write = match_original_shape(H_est, source_mat_path)
+        H_est_to_write = match_original_shape(H_est, f)
         
         # End timing and calculate statistics
         end_time = time.perf_counter()
@@ -594,7 +676,8 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             'nmse': nmse,
             'nmse_db': nmse_db,
             'ssim': ssim,
-            'out_key': out_key
+            'out_key': out_key,
+            'model_file': detected_model_name
         })
 
         # 9. Save inferred channel and metrics combined with original dataset variables
@@ -604,7 +687,8 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             'nmse_db': nmse_db,
             'ssim': ssim
         }
-        save_inferred_to_mat(dest_mat_path, source_mat_path, out_key, H_est_to_write, metrics_dict, num_samples=num_samples)
+        save_inferred_to_mat(dest_mat_path, f, out_key, H_est_to_write, metrics_dict, num_samples=num_samples)
+
         
         # 10. Save inference time report to .md note
         try:
@@ -656,6 +740,8 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             metrics_table = "\n".join(table_rows)
             
             ref_out_key = sorted_summary[0]['out_key']
+            detected_models = sorted(list(set(r.get('model_file', model_name) for r in sorted_summary)))
+            detected_models_str = ", ".join(detected_models)
             
             md_content = f"""# {prefix} Inference Run Reference
 
@@ -685,7 +771,7 @@ All variables are saved combined in **`inferredChannel.mat`** inside each target
 - Constant system variables: `bs_loc_ENU`, `r_sat_ECEF`, `v_sat_ECEF`, `v_sat_ENU`, `satelliteDopplerShift_bc`, etc.
 
 ## Inference Details
-- **ONNX Model File**: {model_name}
+- **ONNX Model File**: {detected_models_str}
 - **Number of Samples**: {num_samples if num_samples is not None else 'All'}
 - **Extrapolation Clipping**: {is_clip_extrap}
 - **MATLAB Variable Key**: {ref_out_key}

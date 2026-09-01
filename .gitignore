@@ -11,3 +11,4 @@ __pycache__/
 *.err
 Distribution/
 single_dataset/trained_models/
+.vscode/

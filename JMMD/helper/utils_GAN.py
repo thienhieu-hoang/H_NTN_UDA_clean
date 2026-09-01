@@ -1463,7 +1463,7 @@ def train_step_wgan_gp_source_only(model, loader_H, loss_fn, optimizers, lower_r
         avg_epoc_loss_d=avg_loss_d
     )
 
-def val_step_wgan_gp_source_only(model, loader_H, loss_fn, lower_range, nsymb=14, weights=None, linear_interp=False):
+def val_step_wgan_gp_source_only(model, loader_H, loss_fn, lower_range, nsymb=14, weights=None, linear_interp=False, return_H_gen=False):
     """
     Validation step for source-only training.
     Validates on source domain, tests on target domain.
@@ -1484,6 +1484,12 @@ def val_step_wgan_gp_source_only(model, loader_H, loss_fn, lower_range, nsymb=14
     epoc_nmse_val_target = 0.0  # This is now testing on target
     epoc_gan_disc_loss = 0.0
     H_sample = []
+    if return_H_gen:
+        all_H_gen_src = []
+        all_H_gen_tgt = []
+
+    H_true_sample, H_input_sample, H_est_sample = None, None, None
+    nmse_input_source, nmse_est_source = None, None
 
     for idx in range(loader_H_true_val_source.total_batches):
         # --- Source domain validation ---
@@ -1518,6 +1524,22 @@ def val_step_wgan_gp_source_only(model, loader_H, loss_fn, lower_range, nsymb=14
         d_loss_src = tf.reduce_mean(d_fake_src) - tf.reduce_mean(d_real_src) + 10.0 * gp_src
         epoc_gan_disc_loss += d_loss_src.numpy() * x_src.shape[0]
 
+        if idx == 0:
+            n_samples = min(3, x_src_real.shape[0])
+            H_true_sample = y_src_real[:n_samples].copy()
+            H_input_sample = x_src_real[:n_samples].copy()
+            H_est_sample = preds_src_descaled[:n_samples].numpy().copy() if hasattr(preds_src_descaled, 'numpy') else preds_src_descaled[:n_samples].copy()
+            
+            mse_sample_source = np.mean((H_est_sample - H_true_sample) ** 2, axis=(1, 2, 3))
+            power_sample_source = np.mean(H_true_sample ** 2, axis=(1, 2, 3))
+            nmse_est_source = mse_sample_source / (power_sample_source + 1e-30)
+            mse_input_source = np.mean((H_input_sample - H_true_sample) ** 2, axis=(1, 2, 3))
+            nmse_input_source = mse_input_source / (power_sample_source + 1e-30)
+
+        if return_H_gen:
+            H_gen_src_batch = preds_src_descaled.numpy().copy() if hasattr(preds_src_descaled, 'numpy') else preds_src_descaled.copy()
+            all_H_gen_src.append(H_gen_src_batch)
+
     # --- Target domain testing (separate loop to handle different batch sizes) ---
     for idx in range(loader_H_true_val_target.total_batches):
         x_tgt = loader_H_input_val_target.next_batch()
@@ -1549,7 +1571,7 @@ def val_step_wgan_gp_source_only(model, loader_H, loss_fn, lower_range, nsymb=14
             n_samples = min(3, x_tgt_real.shape[0])
             H_true_sample_target = y_tgt_real[:n_samples].copy()
             H_input_sample_target = x_tgt_real[:n_samples].copy()
-            H_est_sample_target = preds_tgt_descaled[:n_samples].copy()
+            H_est_sample_target = preds_tgt_descaled[:n_samples].numpy().copy() if hasattr(preds_tgt_descaled, 'numpy') else preds_tgt_descaled[:n_samples].copy()
             
             mse_sample_target = np.mean((H_est_sample_target - H_true_sample_target) ** 2, axis=(1, 2, 3))
             power_sample_target = np.mean(H_true_sample_target ** 2, axis=(1, 2, 3))
@@ -1557,15 +1579,31 @@ def val_step_wgan_gp_source_only(model, loader_H, loss_fn, lower_range, nsymb=14
             mse_input_target = np.mean((H_input_sample_target - H_true_sample_target) ** 2, axis=(1, 2, 3))
             nmse_input_target = mse_input_target / (power_sample_target + 1e-30)
             
-            H_sample = [H_true_sample_target, H_input_sample_target, H_est_sample_target, 
-                       nmse_input_target, nmse_est_target]
+            if H_true_sample is not None:
+                H_sample = [H_true_sample, H_input_sample, H_est_sample, nmse_input_source, nmse_est_source,
+                            H_true_sample_target, H_input_sample_target, H_est_sample_target, nmse_input_target, nmse_est_target]
+            else:
+                H_sample = [H_true_sample_target, H_input_sample_target, H_est_sample_target, 
+                           nmse_input_target, nmse_est_target]
+
+        if return_H_gen:
+            H_gen_tgt_batch = preds_tgt_descaled.numpy().copy() if hasattr(preds_tgt_descaled, 'numpy') else preds_tgt_descaled.copy()
+            all_H_gen_tgt.append(H_gen_tgt_batch)
+
+    if return_H_gen:
+        H_gen_src_all = np.concatenate(all_H_gen_src, axis=0) if all_H_gen_src else np.array([])
+        H_gen_tgt_all = np.concatenate(all_H_gen_tgt, axis=0) if all_H_gen_tgt else np.array([])
+        H_gen = {
+            'H_gen_src': H_gen_src_all,
+            'H_gen_tgt': H_gen_tgt_all
+        }
 
     # Calculate averages
-    avg_loss_est_source = epoc_loss_est_source / N_val_source
-    avg_loss_est_target = epoc_loss_est_target / N_val_target  # This is testing performance
-    avg_nmse_source = epoc_nmse_val_source / N_val_source
-    avg_nmse_target = epoc_nmse_val_target / N_val_target  # This is testing performance
-    avg_gan_disc_loss = epoc_gan_disc_loss / N_val_source
+    avg_loss_est_source = epoc_loss_est_source / N_val_source if N_val_source > 0 else 0.0
+    avg_loss_est_target = epoc_loss_est_target / N_val_target if N_val_target > 0 else 0.0  # This is testing performance
+    avg_nmse_source = epoc_nmse_val_source / N_val_source if N_val_source > 0 else 0.0
+    avg_nmse_target = epoc_nmse_val_target / N_val_target if N_val_target > 0 else 0.0  # This is testing performance
+    avg_gan_disc_loss = epoc_gan_disc_loss / N_val_source if N_val_source > 0 else 0.0
 
     # Total loss (source validation only)
     avg_total_loss = est_weight * avg_loss_est_source + adv_weight * avg_gan_disc_loss
@@ -1577,6 +1615,7 @@ def val_step_wgan_gp_source_only(model, loader_H, loss_fn, lower_range, nsymb=14
         'avg_loss_est': avg_loss_est_source,  # Use source for validation
         'avg_gan_disc_loss': avg_gan_disc_loss,
         'avg_jmmd_loss': 0.0,  # No domain adaptation
+        'avg_domain_loss': 0.0,
         'avg_nmse_source': avg_nmse_source,
         'avg_nmse_target': avg_nmse_target,  # This is testing NMSE
         'avg_nmse': avg_nmse_source,  # Use source for validation
@@ -1586,6 +1625,8 @@ def val_step_wgan_gp_source_only(model, loader_H, loss_fn, lower_range, nsymb=14
         'avg_smoothness_loss': 0.0
     }
 
+    if return_H_gen:
+        return H_sample, epoc_eval_return, H_gen
     return H_sample, epoc_eval_return
 
 def val_step_wgan_gp_jmmd(model, loader_H, loss_fn, lower_range, nsymb=14, weights=None, 
@@ -5638,6 +5679,655 @@ class HybridCORALLoss(keras.layers.Layer):
             coral_loss_total += layer_coral_loss
         
         return coral_loss_total / len(source_list)  # Average across layers
+
+
+def visualize_H(H_sample, H_to_save, epoch, figChan, flag, model_path, sub_folder, domain_weight=True):
+    """
+    Visualize estimated channel heatmaps and store matrix samples.
+    """
+    (
+        H_true_sample,  H_input_sample, H_est_sample, 
+        nmse_input_source, nmse_est_source,
+        H_true_sample_target, H_input_sample_target, H_est_sample_target,
+        nmse_input_target, nmse_est_target
+    ) = H_sample
+
+    vis_dir = os.path.join(model_path, sub_folder, 'H_visualize')
+    os.makedirs(vis_dir, exist_ok=True)
+
+    # Plot source domain
+    if flag == 1:
+        figChan(H_true_sample[0,:,:,0], index_save=epoch+1, 
+                figure_save_path=vis_dir, name='H_true_source')
+        figChan(H_input_sample[0,:,:,0], nmse=nmse_input_source[0], title='Raw-estimated Channel', index_save=epoch+1, 
+                figure_save_path=vis_dir, name='H_input_source')
+    figChan(H_est_sample[0,:,:,0], nmse=nmse_est_source[0], title='GAN-refined Channel', index_save=epoch+1, 
+            figure_save_path=vis_dir, name='H_GAN_source')
+
+    # Plot target domain
+    if flag == 1 and (domain_weight != 0 and domain_weight is not False):
+        figChan(H_true_sample_target[0,:,:,0], index_save=epoch+1, 
+                figure_save_path=vis_dir, name='H_true_target')
+        figChan(H_input_sample_target[0,:,:,0], nmse=nmse_input_target[0], title='Raw-estimated Channel', index_save=epoch+1, 
+                figure_save_path=vis_dir, name='H_input_target')
+    figChan(H_est_sample_target[0,:,:,0], nmse=nmse_est_target[0], title='GAN-refined Channel', index_save=epoch+1, 
+            figure_save_path=vis_dir, name='H_GAN_target')
+
+    H_to_save[f'H_{epoch+1}_true_source'] = H_true_sample
+    H_to_save[f'H_{epoch+1}_input_source'] = H_input_sample
+    H_to_save[f'H_{epoch+1}_est_source'] = H_est_sample
+
+    if domain_weight != 0 and domain_weight is not False:
+        H_to_save[f'H_{epoch+1}_true_target'] = H_true_sample_target
+        H_to_save[f'H_{epoch+1}_input_target'] = H_input_sample_target
+        H_to_save[f'H_{epoch+1}_est_target'] = H_est_sample_target
+
+
+def train_step_wgan_gp_coral(model, loader_H, loss_fn, optimizers, lower_range=-1, 
+                             coral_loss_fn=None, save_features=False, nsymb=14, weights=None, linear_interp=False):
+    """
+    Direct Estimation WGAN-GP training step with CORAL domain adaptation for cGAN
+    Model directly predicts refined channel H_est = Generator(H_in)
+    """
+    loader_H_input_train_src, loader_H_true_train_src, \
+        loader_H_input_train_tgt, loader_H_true_train_tgt = loader_H
+    loss_fn_est, loss_fn_bce = loss_fn[:2]
+    gen_optimizer, disc_optimizer = optimizers[:2]
+    
+    adv_weight = weights.get('adv_weight', 0.01) if weights else 0.01
+    temporal_weight = weights.get('temporal_weight', 0.0) if weights else 0.0
+    frequency_weight = weights.get('frequency_weight', 0.0) if weights else 0.0
+    est_weight = weights.get('est_weight', 1.0) if weights else 1.0
+    domain_weight = weights.get('domain_weight', 0.5) if weights else 0.5
+    
+    if coral_loss_fn is None:
+        coral_loss_fn = GlobalPoolingCORALLoss()
+    
+    epoc_loss_g = 0.0
+    epoc_loss_d = 0.0
+    epoc_loss_est = 0.0
+    epoc_loss_est_tgt = 0.0
+    epoc_loss_coral = 0.0
+    N_train = 0
+    
+    if save_features and (domain_weight != 0):
+        features_h5_path_source = 'features_source.h5'
+        if os.path.exists(features_h5_path_source):
+            os.remove(features_h5_path_source)
+        features_h5_source = h5py.File(features_h5_path_source, 'w')
+        features_dataset_source = None
+
+        features_h5_path_target = 'features_target.h5'
+        if os.path.exists(features_h5_path_target):
+            os.remove(features_h5_path_target)   
+        features_h5_target = h5py.File(features_h5_path_target, 'w')
+        features_dataset_target = None
+    
+    for batch_idx in range(loader_H_true_train_src.total_batches):
+        x_src = loader_H_input_train_src.next_batch()
+        y_src = loader_H_true_train_src.next_batch()
+        x_tgt = loader_H_input_train_tgt.next_batch()
+        y_tgt = loader_H_true_train_tgt.next_batch()
+        N_train += x_src.shape[0]
+
+        # Preprocess source
+        x_src = complx2real(x_src)
+        y_src = complx2real(y_src)
+        x_src = np.transpose(x_src, (0, 2, 3, 1))
+        y_src = np.transpose(y_src, (0, 2, 3, 1))
+        x_scaled_src, x_min_src, x_max_src = minmaxScaler(x_src, lower_range=lower_range, linear_interp=linear_interp)
+        y_scaled_src, _, _ = minmaxScaler(y_src, min_pre=x_min_src, max_pre=x_max_src, lower_range=lower_range)
+
+        # Preprocess target
+        x_tgt = complx2real(x_tgt)
+        y_tgt = complx2real(y_tgt)
+        x_tgt = np.transpose(x_tgt, (0, 2, 3, 1))
+        y_tgt = np.transpose(y_tgt, (0, 2, 3, 1))
+        x_scaled_tgt, x_min_tgt, x_max_tgt = minmaxScaler(x_tgt, lower_range=lower_range, linear_interp=linear_interp)
+        y_scaled_tgt, _, _ = minmaxScaler(y_tgt, min_pre=x_min_tgt, max_pre=x_max_tgt, lower_range=lower_range)
+
+        # === 1. Train Discriminator (WGAN-GP on source domain) ===
+        with tf.GradientTape() as tape_d:
+            x_fake_src, _ = model.generator(x_scaled_src, training=True)
+            d_real = model.discriminator(y_scaled_src, training=True)
+            d_fake = model.discriminator(x_fake_src, training=True)
+            
+            gp = gradient_penalty(model.discriminator, y_scaled_src, x_fake_src, batch_size=x_scaled_src.shape[0])
+            lambda_gp = 10.0
+
+            d_loss = tf.reduce_mean(d_fake) - tf.reduce_mean(d_real) + lambda_gp * gp
+            if model.discriminator.losses:
+                d_loss += tf.add_n(model.discriminator.losses)
+                
+        grads_d = tape_d.gradient(d_loss, model.discriminator.trainable_variables)
+        disc_optimizer.apply_gradients(zip(grads_d, model.discriminator.trainable_variables))
+        epoc_loss_d += d_loss.numpy() * x_src.shape[0]
+
+        # === 2. Train Generator with CORAL ===
+        with tf.GradientTape() as tape_g:
+            x_fake_src, features_src = model.generator(x_scaled_src, training=True)
+            x_fake_tgt, features_tgt = model.generator(x_scaled_tgt, training=True)
+            
+            d_fake_src = model.discriminator(x_fake_src, training=False)
+            
+            g_adv_loss = -tf.reduce_mean(d_fake_src)
+            g_est_loss = loss_fn_est(y_scaled_src, x_fake_src)
+            g_est_loss_tgt = loss_fn_est(y_scaled_tgt, x_fake_tgt)
+            
+            coral_loss = coral_loss_fn(features_src, features_tgt)
+            
+            if temporal_weight != 0 or frequency_weight != 0:
+                smoothness_loss_src = compute_total_smoothness_loss(x_fake_src, temporal_weight=temporal_weight, frequency_weight=frequency_weight)
+                smoothness_loss_tgt = compute_total_smoothness_loss(x_fake_tgt, temporal_weight=temporal_weight, frequency_weight=frequency_weight)
+                smoothness_loss = (smoothness_loss_src + smoothness_loss_tgt) / 2
+            else:
+                smoothness_loss = 0.0
+        
+            g_loss = (est_weight * g_est_loss + 
+                      adv_weight * g_adv_loss + 
+                      domain_weight * coral_loss + 
+                      smoothness_loss)
+            
+            if model.generator.losses:
+                g_loss += tf.add_n(model.generator.losses)
+        
+        # Save features if required
+        if save_features and (domain_weight != 0):
+            features_np_source = features_src[-1].numpy()
+            if features_dataset_source is None:
+                features_dataset_source = features_h5_source.create_dataset(
+                    'features',
+                    data=features_np_source,
+                    maxshape=(None,) + features_np_source.shape[1:],
+                    chunks=True
+                )
+            else:
+                features_dataset_source.resize(features_dataset_source.shape[0] + features_np_source.shape[0], axis=0)
+                features_dataset_source[-features_np_source.shape[0]:] = features_np_source
+                
+            features_np_target = features_tgt[-1].numpy()
+            if features_dataset_target is None:
+                features_dataset_target = features_h5_target.create_dataset(
+                    'features',
+                    data=features_np_target,
+                    maxshape=(None,) + features_np_target.shape[1:],
+                    chunks=True
+                )
+            else:
+                features_dataset_target.resize(features_dataset_target.shape[0] + features_np_target.shape[0], axis=0)
+                features_dataset_target[-features_np_target.shape[0]:] = features_np_target
+                
+        grads_g = tape_g.gradient(g_loss, model.generator.trainable_variables)
+        gen_optimizer.apply_gradients(zip(grads_g, model.generator.trainable_variables))
+        
+        epoc_loss_g += g_loss.numpy() * x_src.shape[0]
+        epoc_loss_est += g_est_loss.numpy() * x_src.shape[0]
+        epoc_loss_est_tgt += g_est_loss_tgt.numpy() * x_tgt.shape[0]
+        epoc_loss_coral += coral_loss.numpy() * x_src.shape[0]
+        
+    if save_features and (domain_weight != 0):    
+        features_h5_source.close()
+        features_h5_target.close()
+    
+    avg_loss_g = epoc_loss_g / N_train if N_train > 0 else 0.0
+    avg_loss_d = epoc_loss_d / N_train if N_train > 0 else 0.0
+    avg_loss_est = epoc_loss_est / N_train if N_train > 0 else 0.0
+    avg_loss_coral = epoc_loss_coral / N_train if N_train > 0 else 0.0
+    avg_loss_est_tgt = epoc_loss_est_tgt / N_train if N_train > 0 else 0.0
+    
+    return train_step_Output(
+        avg_epoc_loss_est=avg_loss_est,
+        avg_epoc_loss_domain=avg_loss_coral,
+        avg_epoc_loss=avg_loss_g,
+        avg_epoc_loss_est_target=avg_loss_est_tgt,
+        features_source=features_src[-1] if features_src else None,
+        film_features_source=features_src[-1] if features_src else None,
+        avg_epoc_loss_d=avg_loss_d
+    )
+
+
+def val_step_wgan_gp_coral(model, loader_H, loss_fn, lower_range, coral_loss_fn=None, nsymb=14, weights=None, 
+                           linear_interp=False, return_H_gen=False):
+    """
+    Validation step for Direct Estimation WGAN-GP model with CORAL.
+    """
+    adv_weight = weights.get('adv_weight', 0.01) if weights else 0.01
+    temporal_weight = weights.get('temporal_weight', 0.0) if weights else 0.0
+    frequency_weight = weights.get('frequency_weight', 0.0) if weights else 0.0
+    est_weight = weights.get('est_weight', 1.0) if weights else 1.0
+    domain_weight = weights.get('domain_weight', 0.5) if weights else 0.5
+    
+    loader_H_input_val_source, loader_H_true_val_source, loader_H_input_val_target, loader_H_true_val_target = loader_H
+    loss_fn_est, loss_fn_bce = loss_fn[:2]
+    
+    if coral_loss_fn is None:
+        coral_loss_fn = GlobalPoolingCORALLoss()
+    
+    N_val_source = 0
+    N_val_target = 0
+    epoc_loss_est_source = 0.0
+    epoc_loss_est_target = 0.0
+    epoc_nmse_val_source = 0.0
+    epoc_nmse_val_target = 0.0
+    epoc_gan_disc_loss = 0.0
+    epoc_coral_loss = 0.0
+    epoc_smoothness_loss = 0.0
+    H_sample = []
+    if return_H_gen:
+        all_H_gen_src = []
+        all_H_gen_tgt = []
+
+    for idx in range(loader_H_true_val_source.total_batches):
+        x_src = loader_H_input_val_source.next_batch()
+        y_src = loader_H_true_val_source.next_batch()
+        x_tgt = loader_H_input_val_target.next_batch()
+        y_tgt = loader_H_true_val_target.next_batch()
+        N_val_source += x_src.shape[0]
+        N_val_target += x_tgt.shape[0]
+
+        # Preprocess source
+        x_src_real = complx2real(x_src)
+        y_src_real = complx2real(y_src)
+        x_src_real = np.transpose(x_src_real, (0, 2, 3, 1))
+        y_src_real = np.transpose(y_src_real, (0, 2, 3, 1))
+        x_scaled_src, x_min_src, x_max_src = minmaxScaler(x_src_real, lower_range=lower_range, linear_interp=linear_interp)
+        y_scaled_src, _, _ = minmaxScaler(y_src_real, min_pre=x_min_src, max_pre=x_max_src, lower_range=lower_range)
+
+        # Preprocess target
+        x_tgt_real = complx2real(x_tgt)
+        y_tgt_real = complx2real(y_tgt)
+        x_tgt_real = np.transpose(x_tgt_real, (0, 2, 3, 1))
+        y_tgt_real = np.transpose(y_tgt_real, (0, 2, 3, 1))
+        x_scaled_tgt, x_min_tgt, x_max_tgt = minmaxScaler(x_tgt_real, lower_range=lower_range, linear_interp=linear_interp)
+        y_scaled_tgt, _, _ = minmaxScaler(y_tgt_real, min_pre=x_min_tgt, max_pre=x_max_tgt, lower_range=lower_range)
+
+        # === Source domain prediction ===
+        preds_src, features_src = model.generator(x_scaled_src, training=False, return_features=True)
+        preds_src = preds_src.numpy() if hasattr(preds_src, 'numpy') else preds_src
+        preds_src_descaled = deMinMax(preds_src, x_min_src, x_max_src, lower_range=lower_range)
+        batch_est_loss_source = loss_fn_est(y_scaled_src, preds_src).numpy()
+        epoc_loss_est_source += batch_est_loss_source * x_src.shape[0]
+        mse_val_source = np.mean((preds_src_descaled - y_src_real) ** 2, axis=(1, 2, 3))
+        power_source = np.mean(y_src_real ** 2, axis=(1, 2, 3))
+        epoc_nmse_val_source += np.mean(mse_val_source / (power_source + 1e-30)) * x_src.shape[0]
+
+        # === Target domain prediction ===
+        preds_tgt, features_tgt = model.generator(x_scaled_tgt, training=False, return_features=True)
+        preds_tgt = preds_tgt.numpy() if hasattr(preds_tgt, 'numpy') else preds_tgt
+        preds_tgt_descaled = deMinMax(preds_tgt, x_min_tgt, x_max_tgt, lower_range=lower_range)
+        batch_est_loss_target = loss_fn_est(y_scaled_tgt, preds_tgt).numpy()
+        epoc_loss_est_target += batch_est_loss_target * x_tgt.shape[0]
+        mse_val_target = np.mean((preds_tgt_descaled - y_tgt_real) ** 2, axis=(1, 2, 3))
+        power_target = np.mean(y_tgt_real ** 2, axis=(1, 2, 3))
+        epoc_nmse_val_target += np.mean(mse_val_target / (power_target + 1e-30)) * x_tgt.shape[0]
+
+        # === Discriminator Loss on source ===
+        d_real_src = model.discriminator(y_scaled_src, training=False)
+        d_fake_src = model.discriminator(preds_src, training=False)
+        gp_src = gradient_penalty(model.discriminator, y_scaled_src, preds_src, batch_size=x_scaled_src.shape[0])
+        lambda_gp = 10.0
+        d_loss_src = tf.reduce_mean(d_fake_src) - tf.reduce_mean(d_real_src) + lambda_gp * gp_src
+        epoc_gan_disc_loss += d_loss_src.numpy() * x_src.shape[0]
+
+        # === CORAL Loss ===
+        if domain_weight > 0:
+            coral_loss = coral_loss_fn(features_src, features_tgt)
+            epoc_coral_loss += coral_loss.numpy() * x_src.shape[0]
+        
+        # === Smoothness loss ===
+        if temporal_weight != 0 or frequency_weight != 0:
+            preds_src_tensor = tf.convert_to_tensor(preds_src) if not tf.is_tensor(preds_src) else preds_src
+            preds_tgt_tensor = tf.convert_to_tensor(preds_tgt) if not tf.is_tensor(preds_tgt) else preds_tgt
+            
+            smoothness_loss_src = compute_total_smoothness_loss(
+                preds_src_tensor, temporal_weight=temporal_weight, frequency_weight=frequency_weight
+            )
+            smoothness_loss_tgt = compute_total_smoothness_loss(
+                preds_tgt_tensor, temporal_weight=temporal_weight, frequency_weight=frequency_weight
+            )
+            batch_smoothness_loss = (smoothness_loss_src + smoothness_loss_tgt) / 2
+            epoc_smoothness_loss += batch_smoothness_loss.numpy() * x_src.shape[0]
+
+        # === Save H samples for first batch ===
+        if idx == 0:
+            n_samples = min(3, x_src_real.shape[0], x_tgt_real.shape[0])
+            H_true_sample = y_src_real[:n_samples].copy()
+            H_input_sample = x_src_real[:n_samples].copy()
+            H_est_sample = preds_src_descaled[:n_samples].numpy().copy() if hasattr(preds_src_descaled, 'numpy') else preds_src_descaled[:n_samples].copy()
+            
+            mse_sample_source = np.mean((H_est_sample - H_true_sample) ** 2, axis=(1, 2, 3))
+            power_sample_source = np.mean(H_true_sample ** 2, axis=(1, 2, 3))
+            nmse_est_source = mse_sample_source / (power_sample_source + 1e-30)
+            mse_input_source = np.mean((H_input_sample - H_true_sample) ** 2, axis=(1, 2, 3))
+            nmse_input_source = mse_input_source / (power_sample_source + 1e-30)
+            
+            H_true_sample_target = y_tgt_real[:n_samples].copy()
+            H_input_sample_target = x_tgt_real[:n_samples].copy()
+            H_est_sample_target = preds_tgt_descaled[:n_samples].numpy().copy() if hasattr(preds_tgt_descaled, 'numpy') else preds_tgt_descaled[:n_samples].copy()
+            
+            mse_sample_target = np.mean((H_est_sample_target - H_true_sample_target) ** 2, axis=(1, 2, 3))
+            power_sample_target = np.mean(H_true_sample_target ** 2, axis=(1, 2, 3))
+            nmse_est_target = mse_sample_target / (power_sample_target + 1e-30)
+            mse_input_target = np.mean((H_input_sample_target - H_true_sample_target) ** 2, axis=(1, 2, 3))
+            nmse_input_target = mse_input_target / (power_sample_target + 1e-30)
+            
+            H_sample = [H_true_sample, H_input_sample, H_est_sample, nmse_input_source, nmse_est_source,
+                        H_true_sample_target, H_input_sample_target, H_est_sample_target, nmse_input_target, nmse_est_target]
+            
+        if return_H_gen:
+            H_gen_src_batch = preds_src_descaled.numpy().copy() if hasattr(preds_src_descaled, 'numpy') else preds_src_descaled.copy()
+            H_gen_tgt_batch = preds_tgt_descaled.numpy().copy() if hasattr(preds_tgt_descaled, 'numpy') else preds_tgt_descaled.copy()
+            all_H_gen_src.append(H_gen_src_batch)
+            all_H_gen_tgt.append(H_gen_tgt_batch)
+            
+    if return_H_gen:
+        H_gen_src_all = np.concatenate(all_H_gen_src, axis=0) if all_H_gen_src else np.array([])
+        H_gen_tgt_all = np.concatenate(all_H_gen_tgt, axis=0) if all_H_gen_tgt else np.array([])
+        H_gen = {
+            'H_gen_src': H_gen_src_all,
+            'H_gen_tgt': H_gen_tgt_all
+        }
+
+    N_val = N_val_source + N_val_target
+    avg_loss_est_source = epoc_loss_est_source / N_val_source if N_val_source > 0 else 0.0
+    avg_loss_est_target = epoc_loss_est_target / N_val_target if N_val_target > 0 else 0.0
+    avg_loss_est = (avg_loss_est_source + avg_loss_est_target) / 2
+    avg_nmse_source = epoc_nmse_val_source / N_val_source if N_val_source > 0 else 0.0
+    avg_nmse_target = epoc_nmse_val_target / N_val_target if N_val_target > 0 else 0.0
+    avg_nmse = (avg_nmse_source + avg_nmse_target) / 2
+    avg_gan_disc_loss = epoc_gan_disc_loss / N_val_source if N_val_source > 0 else 0.0
+    avg_coral_loss = epoc_coral_loss / N_val_source if epoc_coral_loss > 0 else 0.0
+    avg_smoothness_loss = epoc_smoothness_loss / N_val_source if epoc_smoothness_loss > 0 else 0.0
+
+    avg_total_loss = est_weight * avg_loss_est + adv_weight * avg_gan_disc_loss \
+                     + domain_weight * avg_coral_loss + avg_smoothness_loss
+
+    epoc_eval_return = {
+        'avg_total_loss': avg_total_loss,
+        'avg_loss_est_source': avg_loss_est_source,
+        'avg_loss_est_target': avg_loss_est_target, 
+        'avg_loss_est': avg_loss_est,
+        'avg_gan_disc_loss': avg_gan_disc_loss,
+        'avg_domain_loss': avg_coral_loss,
+        'avg_nmse_source': avg_nmse_source,
+        'avg_nmse_target': avg_nmse_target,
+        'avg_nmse': avg_nmse,
+        'avg_domain_acc_source': 0.5,
+        'avg_domain_acc_target': 0.5,
+        'avg_domain_acc': 0.5,
+        'avg_smoothness_loss': avg_smoothness_loss
+    }
+
+    if return_H_gen:
+        return H_sample, epoc_eval_return, H_gen
+    return H_sample, epoc_eval_return
+
+
+def train_step_wgan_gp_source_only_residual(model, loader_H, loss_fn, optimizers, lower_range=-1, 
+                                            save_features=False, nsymb=14, weights=None, linear_interp=False):
+    """
+    WGAN-GP training step with residual learning using only source domain (no domain adaptation)
+    """
+    loader_H_input_train_src, loader_H_true_train_src, \
+        loader_H_input_train_tgt, loader_H_true_train_tgt = loader_H
+    loss_fn_est, loss_fn_bce = loss_fn[:2]
+    gen_optimizer, disc_optimizer = optimizers[:2]
+    
+    adv_weight = weights.get('adv_weight', 0.01) if weights else 0.01
+    temporal_weight = weights.get('temporal_weight', 0.0) if weights else 0.0
+    frequency_weight = weights.get('frequency_weight', 0.0) if weights else 0.0
+    est_weight = weights.get('est_weight', 1.0) if weights else 1.0
+    
+    epoc_loss_g = 0.0
+    epoc_loss_d = 0.0
+    epoc_loss_est = 0.0
+    epoc_loss_est_tgt = 0.0
+    N_train = 0
+    
+    for batch_idx in range(loader_H_true_train_src.total_batches):
+        x_src = loader_H_input_train_src.next_batch()
+        y_src = loader_H_true_train_src.next_batch()
+        N_train += x_src.shape[0]
+
+        x_src = complx2real(x_src)
+        y_src = complx2real(y_src)
+        x_src = np.transpose(x_src, (0, 2, 3, 1))
+        y_src = np.transpose(y_src, (0, 2, 3, 1))
+        x_scaled_src, x_min_src, x_max_src = minmaxScaler(x_src, lower_range=lower_range, linear_interp=linear_interp)
+        y_scaled_src, _, _ = minmaxScaler(y_src, min_pre=x_min_src, max_pre=x_max_src, lower_range=lower_range)
+
+        # Train Discriminator
+        with tf.GradientTape() as tape_d:
+            residual_src, _ = model.generator(x_scaled_src, training=True)
+            x_fake_src = x_scaled_src + residual_src
+            d_real = model.discriminator(y_scaled_src, training=True)
+            d_fake = model.discriminator(x_fake_src, training=True)
+            
+            gp = gradient_penalty(model.discriminator, y_scaled_src, x_fake_src, batch_size=x_scaled_src.shape[0])
+            lambda_gp = 10.0
+
+            d_loss = tf.reduce_mean(d_fake) - tf.reduce_mean(d_real) + lambda_gp * gp
+            if model.discriminator.losses:
+                d_loss += tf.add_n(model.discriminator.losses)
+                
+        grads_d = tape_d.gradient(d_loss, model.discriminator.trainable_variables)
+        disc_optimizer.apply_gradients(zip(grads_d, model.discriminator.trainable_variables))
+        epoc_loss_d += d_loss.numpy() * x_src.shape[0]
+
+        # Train Generator
+        with tf.GradientTape() as tape_g:
+            residual_src, features_src = model.generator(x_scaled_src, training=True)
+            x_fake_src = x_scaled_src + residual_src
+            d_fake_src = model.discriminator(x_fake_src, training=False)
+            
+            g_adv_loss = -tf.reduce_mean(d_fake_src)
+            g_est_loss = loss_fn_est(y_scaled_src, x_fake_src)
+            
+            residual_reg = tf.reduce_mean(tf.square(residual_src))
+            residual_penalty = 0.001 * residual_reg
+            
+            if temporal_weight != 0 or frequency_weight != 0:
+                smoothness_loss = compute_total_smoothness_loss(x_fake_src, temporal_weight=temporal_weight, frequency_weight=frequency_weight)
+            else:
+                smoothness_loss = 0.0
+        
+            g_loss = est_weight * g_est_loss + adv_weight * g_adv_loss + residual_penalty + smoothness_loss
+            if model.generator.losses:
+                g_loss += tf.add_n(model.generator.losses)
+                
+        grads_g = tape_g.gradient(g_loss, model.generator.trainable_variables)
+        gen_optimizer.apply_gradients(zip(grads_g, model.generator.trainable_variables))
+        
+        epoc_loss_g += g_loss.numpy() * x_src.shape[0]
+        epoc_loss_est += g_est_loss.numpy() * x_src.shape[0]
+        
+        # Monitor target
+        if batch_idx < loader_H_true_train_tgt.total_batches:
+            x_tgt = loader_H_input_train_tgt.next_batch()
+            y_tgt = loader_H_true_train_tgt.next_batch()
+            x_tgt = complx2real(x_tgt)
+            y_tgt = complx2real(y_tgt)
+            x_tgt = np.transpose(x_tgt, (0, 2, 3, 1))
+            y_tgt = np.transpose(y_tgt, (0, 2, 3, 1))
+            x_scaled_tgt, x_min_tgt, x_max_tgt = minmaxScaler(x_tgt, lower_range=lower_range, linear_interp=linear_interp)
+            y_scaled_tgt, _, _ = minmaxScaler(y_tgt, min_pre=x_min_tgt, max_pre=x_max_tgt, lower_range=lower_range)
+            
+            residual_tgt, _ = model.generator(x_scaled_tgt, training=False)
+            x_fake_tgt = x_scaled_tgt + residual_tgt
+            g_est_loss_tgt = loss_fn_est(y_scaled_tgt, x_fake_tgt)
+            epoc_loss_est_tgt += g_est_loss_tgt.numpy() * x_tgt.shape[0]
+
+    avg_loss_g = epoc_loss_g / N_train if N_train > 0 else 0.0
+    avg_loss_d = epoc_loss_d / N_train if N_train > 0 else 0.0
+    avg_loss_est = epoc_loss_est / N_train if N_train > 0 else 0.0
+    avg_loss_est_tgt = epoc_loss_est_tgt / N_train if epoc_loss_est_tgt > 0 else 0.0
+    
+    return train_step_Output(
+        avg_epoc_loss_est=avg_loss_est,
+        avg_epoc_loss_domain=0.0,
+        avg_epoc_loss=avg_loss_g,
+        avg_epoc_loss_est_target=avg_loss_est_tgt,
+        features_source=None,
+        film_features_source=None,
+        avg_epoc_loss_d=avg_loss_d
+    )
+
+
+def val_step_wgan_gp_source_only_residual(model, loader_H, loss_fn, lower_range, nsymb=14, weights=None, linear_interp=False, return_H_gen=False):
+    """
+    Validation step for source-only training with residual learning.
+    """
+    loader_H_input_val_source, loader_H_true_val_source, loader_H_input_val_target, loader_H_true_val_target = loader_H
+    loss_fn_est, loss_fn_bce = loss_fn[:2]
+    
+    adv_weight = weights.get('adv_weight', 0.01) if weights else 0.01
+    temporal_weight = weights.get('temporal_weight', 0.0) if weights else 0.0
+    frequency_weight = weights.get('frequency_weight', 0.0) if weights else 0.0
+    est_weight = weights.get('est_weight', 1.0) if weights else 1.0
+    
+    N_val_source = 0
+    N_val_target = 0
+    epoc_loss_est_source = 0.0
+    epoc_loss_est_target = 0.0
+    epoc_nmse_val_source = 0.0
+    epoc_nmse_val_target = 0.0
+    epoc_gan_disc_loss = 0.0
+    H_sample = []
+    if return_H_gen:
+        all_H_gen_src = []
+        all_H_gen_tgt = []
+
+    H_true_sample, H_input_sample, H_est_sample = None, None, None
+    nmse_input_source, nmse_est_source = None, None
+
+    for idx in range(loader_H_true_val_source.total_batches):
+        x_src = loader_H_input_val_source.next_batch()
+        y_src = loader_H_true_val_source.next_batch()
+        N_val_source += x_src.shape[0]
+
+        x_src_real = complx2real(x_src)
+        y_src_real = complx2real(y_src)
+        x_src_real = np.transpose(x_src_real, (0, 2, 3, 1))
+        y_src_real = np.transpose(y_src_real, (0, 2, 3, 1))
+        x_scaled_src, x_min_src, x_max_src = minmaxScaler(x_src_real, lower_range=lower_range, linear_interp=linear_interp)
+        y_scaled_src, _, _ = minmaxScaler(y_src_real, min_pre=x_min_src, max_pre=x_max_src, lower_range=lower_range)
+
+        residual_src, _ = model.generator(x_scaled_src, training=False, return_features=False)
+        preds_src = x_scaled_src + residual_src
+        preds_src = preds_src.numpy() if hasattr(preds_src, 'numpy') else preds_src
+        preds_src_descaled = deMinMax(preds_src, x_min_src, x_max_src, lower_range=lower_range)
+        batch_est_loss_source = loss_fn_est(y_scaled_src, preds_src).numpy()
+        epoc_loss_est_source += batch_est_loss_source * x_src.shape[0]
+        
+        mse_val_source = np.mean((preds_src_descaled - y_src_real) ** 2, axis=(1, 2, 3))
+        power_source = np.mean(y_src_real ** 2, axis=(1, 2, 3))
+        epoc_nmse_val_source += np.mean(mse_val_source / (power_source + 1e-30)) * x_src.shape[0]
+
+        d_real_src = model.discriminator(y_scaled_src, training=False)
+        d_fake_src = model.discriminator(preds_src, training=False)
+        gp_src = gradient_penalty(model.discriminator, y_scaled_src, preds_src, batch_size=x_scaled_src.shape[0])
+        d_loss_src = tf.reduce_mean(d_fake_src) - tf.reduce_mean(d_real_src) + 10.0 * gp_src
+        epoc_gan_disc_loss += d_loss_src.numpy() * x_src.shape[0]
+
+        if idx == 0:
+            n_samples = min(3, x_src_real.shape[0])
+            H_true_sample = y_src_real[:n_samples].copy()
+            H_input_sample = x_src_real[:n_samples].copy()
+            H_est_sample = preds_src_descaled[:n_samples].numpy().copy() if hasattr(preds_src_descaled, 'numpy') else preds_src_descaled[:n_samples].copy()
+            
+            mse_sample_source = np.mean((H_est_sample - H_true_sample) ** 2, axis=(1, 2, 3))
+            power_sample_source = np.mean(H_true_sample ** 2, axis=(1, 2, 3))
+            nmse_est_source = mse_sample_source / (power_sample_source + 1e-30)
+            mse_input_source = np.mean((H_input_sample - H_true_sample) ** 2, axis=(1, 2, 3))
+            nmse_input_source = mse_input_source / (power_sample_source + 1e-30)
+
+        if return_H_gen:
+            H_gen_src_batch = preds_src_descaled.numpy().copy() if hasattr(preds_src_descaled, 'numpy') else preds_src_descaled.copy()
+            all_H_gen_src.append(H_gen_src_batch)
+
+    for idx in range(loader_H_true_val_target.total_batches):
+        x_tgt = loader_H_input_val_target.next_batch()
+        y_tgt = loader_H_true_val_target.next_batch()
+        N_val_target += x_tgt.shape[0]
+
+        x_tgt_real = complx2real(x_tgt)
+        y_tgt_real = complx2real(y_tgt)
+        x_tgt_real = np.transpose(x_tgt_real, (0, 2, 3, 1))
+        y_tgt_real = np.transpose(y_tgt_real, (0, 2, 3, 1))
+        x_scaled_tgt, x_min_tgt, x_max_tgt = minmaxScaler(x_tgt_real, lower_range=lower_range, linear_interp=linear_interp)
+        y_scaled_tgt, _, _ = minmaxScaler(y_tgt_real, min_pre=x_min_tgt, max_pre=x_max_tgt, lower_range=lower_range)
+
+        residual_tgt, _ = model.generator(x_scaled_tgt, training=False, return_features=False)
+        preds_tgt = x_scaled_tgt + residual_tgt
+        preds_tgt = preds_tgt.numpy() if hasattr(preds_tgt, 'numpy') else preds_tgt
+        preds_tgt_descaled = deMinMax(preds_tgt, x_min_tgt, x_max_tgt, lower_range=lower_range)
+        batch_est_loss_target = loss_fn_est(y_scaled_tgt, preds_tgt).numpy()
+        epoc_loss_est_target += batch_est_loss_target * x_tgt.shape[0]
+        
+        mse_val_target = np.mean((preds_tgt_descaled - y_tgt_real) ** 2, axis=(1, 2, 3))
+        power_target = np.mean(y_tgt_real ** 2, axis=(1, 2, 3))
+        epoc_nmse_val_target += np.mean(mse_val_target / (power_target + 1e-30)) * x_tgt.shape[0]
+
+        if idx == 0:
+            n_samples = min(3, x_tgt_real.shape[0])
+            H_true_sample_target = y_tgt_real[:n_samples].copy()
+            H_input_sample_target = x_tgt_real[:n_samples].copy()
+            H_est_sample_target = preds_tgt_descaled[:n_samples].numpy().copy() if hasattr(preds_tgt_descaled, 'numpy') else preds_tgt_descaled[:n_samples].copy()
+            
+            mse_sample_target = np.mean((H_est_sample_target - H_true_sample_target) ** 2, axis=(1, 2, 3))
+            power_sample_target = np.mean(H_true_sample_target ** 2, axis=(1, 2, 3))
+            nmse_est_target = mse_sample_target / (power_sample_target + 1e-30)
+            mse_input_target = np.mean((H_input_sample_target - H_true_sample_target) ** 2, axis=(1, 2, 3))
+            nmse_input_target = mse_input_target / (power_sample_target + 1e-30)
+            
+            if H_true_sample is not None:
+                H_sample = [H_true_sample, H_input_sample, H_est_sample, nmse_input_source, nmse_est_source,
+                            H_true_sample_target, H_input_sample_target, H_est_sample_target, nmse_input_target, nmse_est_target]
+            else:
+                H_sample = [H_true_sample_target, H_input_sample_target, H_est_sample_target, 
+                           nmse_input_target, nmse_est_target]
+
+        if return_H_gen:
+            H_gen_tgt_batch = preds_tgt_descaled.numpy().copy() if hasattr(preds_tgt_descaled, 'numpy') else preds_tgt_descaled.copy()
+            all_H_gen_tgt.append(H_gen_tgt_batch)
+
+    if return_H_gen:
+        H_gen_src_all = np.concatenate(all_H_gen_src, axis=0) if all_H_gen_src else np.array([])
+        H_gen_tgt_all = np.concatenate(all_H_gen_tgt, axis=0) if all_H_gen_tgt else np.array([])
+        H_gen = {
+            'H_gen_src': H_gen_src_all,
+            'H_gen_tgt': H_gen_tgt_all
+        }
+
+    avg_loss_est_source = epoc_loss_est_source / N_val_source if N_val_source > 0 else 0.0
+    avg_loss_est_target = epoc_loss_est_target / N_val_target if N_val_target > 0 else 0.0
+    avg_nmse_source = epoc_nmse_val_source / N_val_source if N_val_source > 0 else 0.0
+    avg_nmse_target = epoc_nmse_val_target / N_val_target if N_val_target > 0 else 0.0
+    avg_gan_disc_loss = epoc_gan_disc_loss / N_val_source if N_val_source > 0 else 0.0
+
+    avg_total_loss = est_weight * avg_loss_est_source + adv_weight * avg_gan_disc_loss
+
+    epoc_eval_return = {
+        'avg_total_loss': avg_total_loss,
+        'avg_loss_est_source': avg_loss_est_source,
+        'avg_loss_est_target': avg_loss_est_target,
+        'avg_loss_est': avg_loss_est_source,
+        'avg_gan_disc_loss': avg_gan_disc_loss,
+        'avg_jmmd_loss': 0.0,
+        'avg_domain_loss': 0.0,
+        'avg_nmse_source': avg_nmse_source,
+        'avg_nmse_target': avg_nmse_target,
+        'avg_nmse': avg_nmse_source,
+        'avg_domain_acc_source': 0.5,
+        'avg_domain_acc_target': 0.5,
+        'avg_domain_acc': 0.5,
+        'avg_smoothness_loss': 0.0
+    }
+
+    if return_H_gen:
+        return H_sample, epoc_eval_return, H_gen
+    return H_sample, epoc_eval_return
+
 
 def train_step_wgan_gp_coral_residual(model, loader_H, loss_fn, optimizers, lower_range=-1, 
                         coral_loss_fn=None, save_features=False, nsymb=14, weights=None, linear_interp=False):

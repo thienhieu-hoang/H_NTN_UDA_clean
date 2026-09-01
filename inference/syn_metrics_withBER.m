@@ -35,8 +35,13 @@ function results = syn_metrics_withBER(batch_folder, labelname)
         labelname = labelname_;
     end
 
-    % Add paths for helper functions (3 levels up) and BER_cal root (1 level up)
-    addpath(fullfile(script_dir, '..', '..', '..', 'helper'));
+    % Add paths for helper functions
+    if exist(fullfile(script_dir, '..', 'single_dataset', 'helper'), 'dir')
+        addpath(fullfile(script_dir, '..', 'single_dataset', 'helper'));
+    end
+    if exist(fullfile(script_dir, '..', 'JMMD', 'helper'), 'dir')
+        addpath(fullfile(script_dir, '..', 'JMMD', 'helper'));
+    end
     addpath(fullfile(script_dir, '..'));
 
     % Path is already absolute, no need to generate relative path version of it
@@ -206,38 +211,63 @@ function save_struct = process_single_batch(batch_folder, labelname)
         mat_path = fullfile(snr_subfolders{s_idx}, 'inferredChannel.mat');
         data = load(mat_path);
 
-        % Extract channels: [numUE x 132 x 14]
-        H_perfect_raw = data.H_perfect;
+        % Extract channels: standardizing to [numUE x 132 x 14]
+        H_perfect_raw = align_channel_matrix(data.H_perfect, nSubcarriers, nSymbols);
 
         if isfield(data, 'H_li')
-            H_li_raw = data.H_li;
+            H_li_raw = align_channel_matrix(data.H_li, nSubcarriers, nSymbols);
         elseif isfield(data, 'H_LI')
-            H_li_raw = data.H_LI;
+            H_li_raw = align_channel_matrix(data.H_LI, nSubcarriers, nSymbols);
         elseif isfield(data, 'H_ls')
-            H_li_raw = data.H_ls;
+            H_li_raw = align_channel_matrix(data.H_ls, nSubcarriers, nSymbols);
         elseif isfield(data, 'H_LS')
-            H_li_raw = data.H_LS;
+            H_li_raw = align_channel_matrix(data.H_LS, nSubcarriers, nSymbols);
         else
-            H_li_raw = data.H_perfect;
+            H_li_raw = H_perfect_raw;
         end
 
         % Adaptively load inferred channel (H_LS_infer, H_LI_infer, H_infer, etc.)
         if isfield(data, 'H_LS_infer')
-            H_infer_raw = double(data.H_LS_infer);
+            H_infer_raw = align_channel_matrix(double(data.H_LS_infer), nSubcarriers, nSymbols);
         elseif isfield(data, 'H_ls_infer')
-            H_infer_raw = double(data.H_ls_infer);
+            H_infer_raw = align_channel_matrix(double(data.H_ls_infer), nSubcarriers, nSymbols);
         elseif isfield(data, 'H_LI_infer')
-            H_infer_raw = double(data.H_LI_infer);
+            H_infer_raw = align_channel_matrix(double(data.H_LI_infer), nSubcarriers, nSymbols);
         elseif isfield(data, 'H_li_infer')
-            H_infer_raw = double(data.H_li_infer);
+            H_infer_raw = align_channel_matrix(double(data.H_li_infer), nSubcarriers, nSymbols);
         elseif isfield(data, 'H_infer')
-            H_infer_raw = double(data.H_infer);
+            H_infer_raw = align_channel_matrix(double(data.H_infer), nSubcarriers, nSymbols);
         else
             error('No inferred channel field (H_LS_infer, H_LI_infer, or H_infer) found in:\n  %s', mat_path);
         end
 
-        H_ls_pilots   = data.H_ls_pilots;
-        dmrs_idx      = double(data.pilot_indices);
+        % 1. Extract Pilot Coordinates / Linear Indices
+        if isfield(data, 'pilot_indices')
+            dmrs_idx = double(data.pilot_indices);
+        elseif isfield(data, 'dmrs_idx')
+            dmrs_idx = double(data.dmrs_idx);
+        elseif isfield(data, 'pilot_rows') && isfield(data, 'pilot_cols')
+            p_rows   = double(data.pilot_rows);
+            p_cols   = double(data.pilot_cols);
+            dmrs_idx = sub2ind([nSubcarriers, nSymbols], p_rows, p_cols);
+        else
+            dmrs_idx = [];
+        end
+
+        % 2. Extract H_ls_pilots
+        if isfield(data, 'H_ls_pilots')
+            H_ls_pilots = double(data.H_ls_pilots);
+        elseif isfield(data, 'H_ls')
+            H_ls_pilots = double(data.H_ls);
+        elseif isfield(data, 'H_LS')
+            H_ls_pilots = double(data.H_LS);
+        elseif isfield(data, 'H_LS_test')
+            H_ls_pilots = double(data.H_LS_test);
+        elseif isfield(data, 'H_ls_pilots_ori')
+            H_ls_pilots = double(data.H_ls_pilots_ori);
+        else
+            H_ls_pilots = [];
+        end
 
         numUE = size(H_perfect_raw, 1);
 
@@ -252,31 +282,41 @@ function save_struct = process_single_batch(batch_folder, labelname)
             H_infer_cell{n}   = squeeze(H_infer_raw(n, :, :));
         end
 
-        % Build empirical covariance matrix R_hh across all UEs from H_perfect
-        nREs = nSubcarriers * nSymbols;
-        H_perf_matrix = zeros(nREs, numUE);
-        for n = 1:numUE
-            h_grid = H_perfect_cell{n};
-            H_perf_matrix(:, n) = h_grid(:);
-        end
+        % Check if LMMSE calculation is possible
+        has_lmmse = ~isempty(dmrs_idx) && ~isempty(H_ls_pilots);
+        if has_lmmse
+            if size(H_ls_pilots, 1) ~= numUE && size(H_ls_pilots, 2) == numUE
+                H_ls_pilots = H_ls_pilots.';
+            end
 
-        R_hh = (H_perf_matrix * H_perf_matrix') / numUE;
-        R_h_hp = R_hh(:, dmrs_idx);
-        R_hp_hp = R_hh(dmrs_idx, dmrs_idx);
+            % Build empirical covariance matrix R_hh across all UEs from H_perfect
+            nREs = nSubcarriers * nSymbols;
+            H_perf_matrix = zeros(nREs, numUE);
+            for n = 1:numUE
+                h_grid = H_perfect_cell{n};
+                H_perf_matrix(:, n) = h_grid(:);
+            end
 
-        % Compute noise power for MMSE weight matrix
-        sigPower = mean(abs(H_ls_pilots(:)).^2);
-        snr_linear = 10^(snr_val / 10);
-        noisePower = sigPower / snr_linear;
+            R_hh = (H_perf_matrix * H_perf_matrix') / numUE;
+            R_h_hp = R_hh(:, dmrs_idx);
+            R_hp_hp = R_hh(dmrs_idx, dmrs_idx);
 
-        W_MMSE = R_h_hp / (R_hp_hp + noisePower * eye(length(dmrs_idx)));
+            % Compute noise power for MMSE weight matrix
+            sigPower = mean(abs(H_ls_pilots(:)).^2);
+            snr_linear = 10^(snr_val / 10);
+            noisePower = sigPower / snr_linear;
 
-        % Formulate H_MMSE for all UEs
-        H_mmse_cell = cell(1, numUE);
-        for n = 1:numUE
-            h_pilot_vec = H_ls_pilots(n, :).';
-            h_mmse_vec  = W_MMSE * h_pilot_vec;
-            H_mmse_cell{n} = reshape(h_mmse_vec, [nSubcarriers, nSymbols]);
+            W_MMSE = R_h_hp / (R_hp_hp + noisePower * eye(length(dmrs_idx)));
+
+            % Formulate H_MMSE for all UEs
+            H_mmse_cell = cell(1, numUE);
+            for n = 1:numUE
+                h_pilot_vec = H_ls_pilots(n, :).';
+                h_mmse_vec  = W_MMSE * h_pilot_vec;
+                H_mmse_cell{n} = reshape(h_mmse_vec, [nSubcarriers, nSymbols]);
+            end
+        else
+            H_mmse_cell = H_perfect_cell; % Fallback if pilots are unavailable
         end
 
         % Initialize per-UE metric accumulators
@@ -580,3 +620,30 @@ function val = compute_ssim_robust(x, y)
         val = num / den;
     end
 end
+
+function arr = align_channel_matrix(arr, nSubc, nSymb)
+    if isempty(arr) || ndims(arr) ~= 3
+        return;
+    end
+    sz = size(arr);
+    % If already [N x 132 x 14]
+    if sz(2) == nSubc && sz(3) == nSymb
+        return;
+    end
+    % If [N x 14 x 132] -> permute to [N x 132 x 14]
+    if sz(2) == nSymb && sz(3) == nSubc
+        arr = permute(arr, [1, 3, 2]);
+        return;
+    end
+    % If [14 x 132 x N] -> permute to [N x 132 x 14]
+    if sz(1) == nSymb && sz(2) == nSubc
+        arr = permute(arr, [3, 2, 1]);
+        return;
+    end
+    % If [132 x 14 x N] -> permute to [N x 132 x 14]
+    if sz(1) == nSubc && sz(2) == nSymb
+        arr = permute(arr, [3, 1, 2]);
+        return;
+    end
+end
+

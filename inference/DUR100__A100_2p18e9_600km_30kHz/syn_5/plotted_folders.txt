@@ -1,0 +1,5 @@
+Folders loaded and plotted in this multi-model comparison:
+  - Legend Label: LS+Attention Inferred
+    Source Path:  C:\\Users\\AT30890\\Hoctap\\1_Hprediction\\working\\H_predict_NTN\\Hest_NTN_UDA_clean\\inference\\DUR100__A100_2p18e9_600km_30kHz\\LS_Attention
+  - Legend Label: LS+Attention Std Inferred
+    Source Path:  C:\\Users\\AT30890\\Hoctap\\1_Hprediction\\working\\H_predict_NTN\\Hest_NTN_UDA_clean\\inference\\DUR100__A100_2p18e9_600km_30kHz\\LS_Attention_standardize

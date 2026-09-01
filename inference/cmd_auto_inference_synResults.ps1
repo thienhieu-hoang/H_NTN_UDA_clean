@@ -41,18 +41,24 @@ $trainedDataset = "DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps"
 
 # 3. List the models - the names of subfolders
 $models = @(
-    "LI_DnCNN_AxialAttention",
-    "LI_DnCNN_AxialAttention_standardize",
-    "LI_DnCNN_CrossAttention",
-    "LI_DnCNN_CrossAttention_standardize"
+    # "LI_cGAN",
+    # "LI_DnCNN",
+    # "LI_DnCNN_Attention"
+    # "LI_DnCNN_AxialAttention",
+    # "LI_DnCNN_CrossAttention",
+    "LS_Attention",
+    "LS_Attention_standardize"
 )
 
 # Corresponding labels/legend names for evaluation
 $labels = @(
-    "LI+DnCNN+AxialAttention Inferred",
-    "LI+DnCNN+AxialAttention+Standardize Inferred",
-    "LI+DnCNN+CrossAttention Inferred",
-    "LI+DnCNN+CrossAttention+Standardize Inferred"
+    # "LI+cGAN Inferred",
+    # "LI+DnCNN Inferred",
+    # "LI+DnCNN+Attention Inferred"
+    # "LI+DnCNN+AxialAttention Inferred",
+    # "LI+DnCNN+CrossAttention Inferred",
+    "LS+Attention Inferred",
+    "LS+Attention Std Inferred"
 )
 
 # 4. Define root folder for outputs and the folder to save results
@@ -123,16 +129,23 @@ for ($i = 0; $i -lt $models.Length; $i++) {
     # Resolve output directory for this specific model
     $outDir = Join-Path $outParentDir $model
     
+    # Determine inference script dynamically (LS models use sequence inference)
+    $inferScript = "inference_onnx_grid.py"
+    if ($model -like "LS_Attention*" -or $model -like "LS_*") {
+        $inferScript = "inference_onnx_lsSequence.py"
+    }
+
     Write-Output "------------------------------------------------------------"
     Write-Output "Processing Run $($i + 1)/$($models.Length):"
-    Write-Output "  Model Name : $model"
-    Write-Output "  Model Dir  : $modelDir"
-    Write-Output "  Dataset Dir: $datasetDir"
-    Write-Output "  Output Dir : $outDir"
+    Write-Output "  Model Name   : $model"
+    Write-Output "  Infer Script : $inferScript"
+    Write-Output "  Model Dir    : $modelDir"
+    Write-Output "  Dataset Dir  : $datasetDir"
+    Write-Output "  Output Dir   : $outDir"
     Write-Output "------------------------------------------------------------"
     
     # Execute the python inference command with appropriate parser flags
-    conda run -n TF_GPU-py3_11 python inference_onnx_grid.py `
+    conda run -n TF_GPU-py3_11 python $inferScript `
         --model-dir $modelDir `
         --dataset-dir $datasetDir `
         --out-dir $outDir `
