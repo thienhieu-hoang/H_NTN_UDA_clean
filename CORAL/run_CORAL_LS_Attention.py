@@ -473,7 +473,7 @@ def h5_to_complex(data):
 
 
 def get_mat_file(dir_path: str, snr: int = None) -> str:
-    """Dynamically resolve the .mat dataset filepath in a given directory or SNR subfolder."""
+    """Dynamically and robustly resolve the primary channel .mat dataset filepath in a given directory or SNR subfolder."""
     if not dir_path or not os.path.exists(dir_path):
         if SOURCE_DIR and os.path.exists(SOURCE_DIR):
             print(f"[Warning] Dataset path '{dir_path}' not found, falling back to '{SOURCE_DIR}'")
@@ -484,29 +484,49 @@ def get_mat_file(dir_path: str, snr: int = None) -> str:
     if os.path.isfile(dir_path) and dir_path.endswith('.mat'):
         return dir_path
 
+    primary_names = ['matlabNTN.mat', 'channel_dur_randomizedUE.mat', 'channel_dur.mat', 'channel_sur.mat', 'channel.mat', 'dataset.mat', 'data.mat']
+    excluded_prefixes = ('inferredChannel', 'testChannel', 'training_history', 'extracted_features', 'evaluation_results', 'channel_grids', 'synthesized', 'sample_')
+
+    def find_best_mat_in_dir(folder):
+        if not os.path.isdir(folder):
+            return None
+        # 1. Check primary names
+        for name in primary_names:
+            p = os.path.join(folder, name)
+            if os.path.isfile(p):
+                return p
+        # 2. Check any valid .mat excluding artifact prefixes
+        for f in sorted(os.listdir(folder)):
+            if f.endswith('.mat') and not f.startswith(excluded_prefixes):
+                return os.path.join(folder, f)
+        return None
+
     # If snr is provided, search SNR subfolders first
     if snr is not None:
         snr_candidates = [
-            os.path.join(dir_path, f"{snr}dB"),
             os.path.join(dir_path, f"SNR_{snr}dB"),
-            os.path.join(dir_path, f"{snr}"),
+            os.path.join(dir_path, f"{snr}dB"),
             os.path.join(dir_path, f"SNR_{snr}"),
+            os.path.join(dir_path, f"{snr}"),
             os.path.join(dir_path, f"SNR_{snr:02d}dB"),
         ]
         for cand in snr_candidates:
-            if os.path.exists(cand) and os.path.isdir(cand):
-                mat_files = [f for f in os.listdir(cand) if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features'))]
-                if mat_files:
-                    return os.path.join(cand, mat_files[0])
+            mat = find_best_mat_in_dir(cand)
+            if mat:
+                return mat
 
-    if os.path.isdir(dir_path):
-        mat_files = [f for f in os.listdir(dir_path) if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features'))]
-        if mat_files:
-            return os.path.join(dir_path, mat_files[0])
+    # Check direct in dir_path
+    mat = find_best_mat_in_dir(dir_path)
+    if mat:
+        return mat
 
+    # Recursive fallback
     for root, _, files in os.walk(dir_path):
-        for f in files:
-            if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features')):
+        for name in primary_names:
+            if name in files:
+                return os.path.join(root, name)
+        for f in sorted(files):
+            if f.endswith('.mat') and not f.startswith(excluded_prefixes):
                 return os.path.join(root, f)
 
     return os.path.join(dir_path, 'matlabNTN.mat')

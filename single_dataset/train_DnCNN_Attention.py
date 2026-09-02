@@ -141,43 +141,123 @@ SNR_FOLDER_MAP = {
 }
 
 
-def find_any_mat_file(base_dir: str) -> str:
-    """Recursively search base_dir for the first valid .mat file."""
+def find_channel_mat_file(base_dir: str) -> str:
+    """
+    Find and return the primary channel .mat dataset file in base_dir.
+    Prioritizes known dataset filenames (e.g. 'matlabNTN.mat', 'channel_dur_randomizedUE.mat')
+    and filters out output/artifact/intermediate files in case other .mat files exist.
+    """
     if not os.path.exists(base_dir):
         return None
+
+    # Preferred dataset filename candidates (checked in order of priority)
+    primary_dataset_names = [
+        'matlabNTN.mat',
+        'channel_dur_randomizedUE.mat',
+        'channel_dur.mat',
+        'channel_sur.mat',
+        'channel.mat',
+        'dataset.mat',
+        'data.mat',
+    ]
+
+    # 1. Direct match with prioritized filenames in base_dir
+    for name in primary_dataset_names:
+        candidate = os.path.join(base_dir, name)
+        if os.path.isfile(candidate):
+            return candidate
+
+    # 2. Case-insensitive search for primary dataset filenames
+    if os.path.isdir(base_dir):
+        files_in_dir = os.listdir(base_dir)
+        for name in primary_dataset_names:
+            for f in files_in_dir:
+                if f.lower() == name.lower() and os.path.isfile(os.path.join(base_dir, f)):
+                    return os.path.join(base_dir, f)
+
+    # 3. Exclude any known output / artifact / temporary .mat files
+    excluded_prefixes = (
+        'testChannel', 'inferredChannel', 'training_history',
+        'channel_grids', 'synthesized', 'evaluation_results',
+        'sample_', 'extracted_features', 'loss_', 'nmse_', 'best_', 'final_'
+    )
+
+    # Search for any valid channel .mat file inside base_dir
     for root, _, files in os.walk(base_dir):
         for f in sorted(files):
-            if f.endswith('.mat'):
+            if f.endswith('.mat') and not f.startswith(excluded_prefixes):
                 return os.path.join(root, f)
+
     return None
 
 
 def get_data_path(data_root: str, snr: int, is_test_code: bool = False) -> str:
     """
-    Return the absolute path to the .mat file for the requested SNR.
+    Robustly locate the .mat data file for the requested SNR, supporting:
+    - SNR folder variations: 'SNR_-10dB', '-10dB', 'SNR_-10', '-10', 'SNR_-10dB'
+    - Dataset filename variations: 'matlabNTN.mat', 'channel_dur_randomizedUE.mat', etc.
+    - Relative paths from workspace root or script directory
+    - Scenario name substring matching in generatedChan/MATLAB and generatedChan/OpenNTN
     """
-    openntn_root = os.path.join(PROJECT_ROOT, 'generatedChan', 'OpenNTN')
-    snr_folder   = SNR_FOLDER_MAP.get(snr, f'{snr}dB')
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(script_dir, '..'))
 
-    if not data_root:
-        target_root = os.path.join(openntn_root, DATA_FOLDER_NAME)
-    else:
-        target_root = data_root
+    candidate_roots = []
+    if data_root:
+        if os.path.isabs(data_root):
+            candidate_roots.append(data_root)
+        else:
+            candidate_roots.append(os.path.abspath(data_root))
+            candidate_roots.append(os.path.join(project_root, data_root))
+            candidate_roots.append(os.path.join(script_dir, data_root))
+            
+            # Scenario substring search in generatedChan/
+            for parent in [os.path.join(project_root, 'generatedChan', 'MATLAB'),
+                           os.path.join(project_root, 'generatedChan', 'OpenNTN')]:
+                if os.path.isdir(parent):
+                    base_name = os.path.basename(data_root.rstrip('\\/'))
+                    for entry in os.listdir(parent):
+                        if base_name in entry:
+                            candidate_roots.append(os.path.join(parent, entry))
 
-    mat_path = os.path.join(target_root, snr_folder, 'channel_dur_randomizedUE.mat')
+    # Add default fallback directories
+    candidate_roots.extend([
+        os.path.join(project_root, 'generatedChan', 'OpenNTN', DATA_FOLDER_NAME),
+        os.path.join(project_root, 'generatedChan', 'OpenNTN', 'DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps'),
+        os.path.join(project_root, 'generatedChan', 'MATLAB', 'sampleWiseDoppler_wGeometry_A100_2p18e9_600km_70deg_30kHz'),
+        os.path.join(project_root, 'generatedChan', 'MATLAB', 'A100_2p18e9_600km_70deg_30kHz')
+    ])
 
-    # Dynamic fallback if configured file does not exist
-    if not os.path.isfile(mat_path):
-        fallback = find_any_mat_file(target_root) or find_any_mat_file(openntn_root)
-        if fallback:
-            print(f'[Data Fallback] Target path not found ({mat_path}).\n'
-                  f'  Dynamically using available .mat file -> {fallback}')
-            return fallback
-        raise FileNotFoundError(
-            f'Data file not found at:\n  {mat_path}\n'
-            f'  and no alternative .mat files found under: {openntn_root}')
+    snr_variations = [
+        f"SNR_{snr}dB",
+        f"{snr}dB",
+        f"SNR_{snr}",
+        f"{snr}",
+        f"SNR_{snr:02d}dB",
+    ]
 
-    return mat_path
+    for root in candidate_roots:
+        if not os.path.isdir(root):
+            continue
+        # 1. Try each SNR subfolder variation
+        for snr_var in snr_variations:
+            snr_dir = os.path.join(root, snr_var)
+            if os.path.isdir(snr_dir):
+                mat_file = find_channel_mat_file(snr_dir)
+                if mat_file:
+                    return mat_file
+
+        # 2. Check if the root itself is an SNR directory (e.g. user passed path directly to SNR folder)
+        root_base = os.path.basename(root.rstrip('\\/'))
+        if root_base in snr_variations or root_base.lower() in [v.lower() for v in snr_variations]:
+            mat_file = find_channel_mat_file(root)
+            if mat_file:
+                return mat_file
+
+    raise FileNotFoundError(
+        f"Could not find any channel .mat data files for SNR={snr} in any searched location.\n"
+        f"Searched roots: {candidate_roots}"
+    )
 
 
 def load_mat_data(mat_path: str, input_type: str):

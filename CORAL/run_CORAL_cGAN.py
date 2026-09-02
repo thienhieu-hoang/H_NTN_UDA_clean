@@ -471,27 +471,41 @@ def get_mat_file(dir_path: str, snr: int = 5) -> str:
         else:
             return dir_path
 
-    if os.path.isfile(dir_path) and dir_path.endswith('.mat'):
-        return dir_path
+    primary_names = ['matlabNTN.mat', 'channel_dur_randomizedUE.mat', 'channel_dur.mat', 'channel_sur.mat', 'channel.mat', 'dataset.mat', 'data.mat']
+    excluded_prefixes = ('inferredChannel', 'testChannel', 'training_history', 'extracted_features', 'evaluation_results', 'channel_grids', 'synthesized', 'sample_')
+
+    def find_best_mat_in_dir(folder):
+        if not os.path.isdir(folder):
+            return None
+        for name in primary_names:
+            p = os.path.join(folder, name)
+            if os.path.isfile(p):
+                return p
+        for f in sorted(os.listdir(folder)):
+            if f.endswith('.mat') and not f.startswith(excluded_prefixes):
+                return os.path.join(folder, f)
+        return None
 
     candidates = [
-        f"{snr}dB", f"SNR_{snr}dB", f"SNR_{snr}", str(snr),
-        f"{snr}db", f"snr_{snr}db", f"snr_{snr}"
+        f"SNR_{snr}dB", f"{snr}dB", f"SNR_{snr}", str(snr),
+        f"SNR_{snr:02d}dB", f"snr_{snr}db", f"snr_{snr}"
     ]
     for cand_name in candidates:
         cand_dir = os.path.join(dir_path, cand_name)
-        if os.path.exists(cand_dir) and os.path.isdir(cand_dir):
-            mat_files = [f for f in os.listdir(cand_dir) if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features'))]
-            if mat_files:
-                return os.path.join(cand_dir, mat_files[0])
+        mat = find_best_mat_in_dir(cand_dir)
+        if mat:
+            return mat
 
-    mat_files = [f for f in os.listdir(dir_path) if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features'))]
-    if mat_files:
-        return os.path.join(dir_path, mat_files[0])
+    mat = find_best_mat_in_dir(dir_path)
+    if mat:
+        return mat
 
     for root, _, files in os.walk(dir_path):
-        for f in files:
-            if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features')):
+        for name in primary_names:
+            if name in files:
+                return os.path.join(root, name)
+        for f in sorted(files):
+            if f.endswith('.mat') and not f.startswith(excluded_prefixes):
                 return os.path.join(root, f)
 
     return os.path.join(dir_path, 'matlabNTN.mat')
