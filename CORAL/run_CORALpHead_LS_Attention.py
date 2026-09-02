@@ -1,6 +1,6 @@
 """
 ====================================================================================================
-CORAL with Multi-Layer Projection Heads for HA02 Attention Model (OpenNTN)
+CORAL with Multi-Layer Projection Heads for HA02 Attention Model (OpenNTN & MATLAB)
 ====================================================================================================
 
 Overview:
@@ -31,10 +31,36 @@ Adaptive Multi-Head Manager:
 
 During testing/inference, the projection heads are completely bypassed, incurring ZERO runtime overhead.
 
+Adaptive Dataset Directory Input Parser (`--source-dir` & `--target-dir`):
+-------------------------------------------------------------------------
+The input parser supports 3 flexible input formats without requiring you to specify whether a dataset 
+is from MATLAB or OpenNTN:
+
+1. Scenario Folder Name / Substring (Auto-Discovered):
+   You can pass just the folder name or scenario substring. The loader automatically scans both 
+   `generatedChan/MATLAB/` and `generatedChan/OpenNTN/` to find the matching directory:
+     --source-dir A100_2p18e9_600km_70deg_30kHz
+     --target-dir DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps
+
+2. Relative Path from Project Root:
+   You can pass the relative path:
+     --source-dir generatedChan/MATLAB/A100_2p18e9_600km_70deg_30kHz
+     --target-dir generatedChan/OpenNTN/DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps
+
+3. Full Absolute Path:
+   You can pass the full path on disk:
+     --source-dir "C:/Users/.../generatedChan/MATLAB/A100_2p18e9_600km_70deg_30kHz"
+     --target-dir "C:/Users/.../generatedChan/OpenNTN/DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps"
+
+How the Loader Resolves Files:
+- Automatically maps requested `--snr` (e.g. 5) to matching subfolder (`SNR_5dB`, `5dB`, `SNR_5`, `5`, etc.).
+- Automatically detects the dataset `.mat` file (`matlabNTN.mat` or `channel_dur_randomizedUE.mat`).
+- Supports both MATLAB v7 (scipy.io) and v7.3 HDF5 (h5py) file structures seamlessly.
+
 Usage Examples:
 ---------------
-    # Multi-layer Projection Head CORAL (Layer 1 + Layer 2 with 64-D projected subspace at 5 dB)
-    python run_CORALpHead_LS_Attention.py --snr 5 --coral-layers layer1 layer2 --domain-weight 0.5 --save-features
+    # Multi-layer Projection Head CORAL (Layer 1 + Layer 2 with MATLAB A100 vs OpenNTN at 5 dB)
+    python run_CORALpHead_LS_Attention.py --source-dir A100_2p18e9_600km_70deg_30kHz --target-dir DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps --snr 5 --coral-layers layer1 layer2 --domain-weight 0.5 --save-features
 
     # Single-layer Projection Head on Transformer Encoder (Layer 1 only)
     python run_CORALpHead_LS_Attention.py --snr 5 --coral-layers layer1 --domain-weight 0.5
@@ -90,7 +116,7 @@ import matplotlib.pyplot as plt
 # ============================================================================
 # CONFIGURATION CONSTANTS
 # ============================================================================
-SOURCE_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\generatedChan\OpenNTN\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps"
+SOURCE_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\generatedChan\MATLAB\A100_2p18e9_600km_70deg_30kHz"
 TARGET_DIR = r"C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\generatedChan\OpenNTN\DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps"
 DEFAULT_SAVE_DIR = ""          # Output save directory (defaults to './results' inside current directory)
 DEFAULT_SNR = 5                # Channel SNR in dB
@@ -477,41 +503,80 @@ def compute_ssim_batch(H_pred: np.ndarray, H_true: np.ndarray) -> float:
 
 
 # =============================================================================
-# 8. DATASET LOADING & RESOLUTION
+# 8. ADAPTIVE DATASET RESOLUTION & LOADING (MATLAB & OpenNTN Compatible)
 # =============================================================================
-def get_mat_file(dir_path: str, snr: int = 5) -> str:
-    """Resolve dataset path dynamically."""
-    if not dir_path or not os.path.exists(dir_path):
-        if SOURCE_DIR and os.path.exists(SOURCE_DIR):
-            print(f"[Warning] Dataset path '{dir_path}' not found, falling back to '{SOURCE_DIR}'")
-            dir_path = SOURCE_DIR
-        else:
-            return dir_path
-
-    if os.path.isfile(dir_path) and dir_path.endswith('.mat'):
-        return dir_path
-
-    candidates = [
-        f"{snr}dB", f"SNR_{snr}dB", f"SNR_{snr}", str(snr),
-        f"{snr}db", f"snr_{snr}db", f"snr_{snr}"
-    ]
-    for cand_name in candidates:
-        cand_dir = os.path.join(dir_path, cand_name)
-        if os.path.exists(cand_dir) and os.path.isdir(cand_dir):
-            mat_files = [f for f in os.listdir(cand_dir) if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features'))]
-            if mat_files:
-                return os.path.join(cand_dir, mat_files[0])
-
-    mat_files = [f for f in os.listdir(dir_path) if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features'))]
-    if mat_files:
-        return os.path.join(dir_path, mat_files[0])
-
-    for root, _, files in os.walk(dir_path):
-        for f in files:
-            if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features')):
+def find_any_mat_file(base_dir: str) -> str:
+    """Recursively search base_dir for the first valid channel .mat file."""
+    if not os.path.exists(base_dir):
+        return None
+    for root, _, files in os.walk(base_dir):
+        for f in sorted(files):
+            if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features', 'synthesized_results')):
                 return os.path.join(root, f)
+    return None
 
-    return os.path.join(dir_path, 'matlabNTN.mat')
+
+def get_mat_file(data_root: str, snr: int = 5) -> str:
+    """
+    Robustly locate the .mat data file for the requested SNR, supporting:
+    - SNR folder variations: 'SNR_-10dB', '-10dB', 'SNR_-10', '-10', '5dB', etc.
+    - Relative paths from workspace root or script directory
+    - Scenario name substring matching (e.g. 'A100_2p18e9...' matching in generatedChan/MATLAB or generatedChan/OpenNTN)
+    """
+    if os.path.isfile(data_root) and data_root.endswith('.mat'):
+        return os.path.abspath(data_root)
+
+    candidate_roots = []
+    if data_root:
+        if os.path.isabs(data_root):
+            candidate_roots.append(data_root)
+        else:
+            candidate_roots.append(os.path.abspath(data_root))
+            candidate_roots.append(os.path.join(project_root, data_root))
+            candidate_roots.append(os.path.join(current_dir, data_root))
+            
+            # Scenario substring search in generatedChan/
+            for parent in [os.path.join(project_root, 'generatedChan', 'MATLAB'),
+                           os.path.join(project_root, 'generatedChan', 'OpenNTN')]:
+                if os.path.isdir(parent):
+                    base_name = os.path.basename(data_root.rstrip('\\/'))
+                    for entry in os.listdir(parent):
+                        if base_name.lower() in entry.lower():
+                            candidate_roots.append(os.path.join(parent, entry))
+
+    # Add default fallbacks
+    candidate_roots.extend([
+        os.path.join(project_root, 'generatedChan', 'OpenNTN', 'DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps'),
+        os.path.join(project_root, 'generatedChan', 'OpenNTN', 'DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps'),
+        os.path.join(project_root, 'generatedChan', 'MATLAB', 'A100_2p18e9_600km_70deg_30kHz')
+    ])
+
+    snr_variations = [
+        f"SNR_{snr}dB",
+        f"{snr}dB",
+        f"SNR_{snr}",
+        f"{snr}",
+        f"SNR_{snr:02d}dB",
+        f"snr_{snr}db"
+    ]
+
+    for root in candidate_roots:
+        if not os.path.isdir(root):
+            continue
+        for snr_var in snr_variations:
+            snr_dir = os.path.join(root, snr_var)
+            if os.path.isdir(snr_dir):
+                mat_file = find_any_mat_file(snr_dir)
+                if mat_file:
+                    return os.path.abspath(mat_file)
+        mat_file = find_any_mat_file(root)
+        if mat_file:
+            return os.path.abspath(mat_file)
+
+    raise FileNotFoundError(
+        f"Could not find any .mat data files for SNR={snr} in any searched location.\n"
+        f"Searched roots: {candidate_roots}"
+    )
 
 
 def load_dataset_attention(mat_filepath: str, input_type: str = 'ls') -> dict:
@@ -536,6 +601,8 @@ def load_dataset_attention(mat_filepath: str, input_type: str = 'ls') -> dict:
                     if isinstance(data, np.ndarray) and data.dtype.names is not None:
                         if 'real' in data.dtype.names and 'imag' in data.dtype.names:
                             data = data['real'] + 1j * data['imag']
+                        elif 'r' in data.dtype.names and 'i' in data.dtype.names:
+                            data = data['r'] + 1j * data['i']
                     mat_dict[k] = data
     else:
         mat = loadmat(mat_filepath)
@@ -552,21 +619,16 @@ def load_dataset_attention(mat_filepath: str, input_type: str = 'ls') -> dict:
             H_perfect_ori = format_3d(mat_dict[k])
             break
     mat_dict['H_perfect_ori'] = H_perfect_ori if H_perfect_ori is not None else H_perfect
-
-    p_cols = np.squeeze(mat_dict.get('pilot_cols', np.arange(88)))
-    p_rows = np.squeeze(mat_dict.get('pilot_rows', np.arange(88)))
-    if np.min(p_cols) >= 1:
-        p_cols = p_cols - 1
-    if np.min(p_rows) >= 1:
-        p_rows = p_rows - 1
+    p_cols = np.squeeze(mat_dict['pilot_cols']).astype(int) - 1
+    p_rows = np.squeeze(mat_dict['pilot_rows']).astype(int) - 1
     mat_dict['pilot_cols'] = p_cols
     mat_dict['pilot_rows'] = p_rows
 
     # Extract 88 pilot inputs
-    input_key_map = {'ls': 'H_ls_pilots', 'prac': 'H_prac', 'li': 'H_li'}
+    input_key_map = {'ls': 'H_ls_pilots', 'prac': 'H_prac', 'li': 'H_li', 'ls_ori': 'H_ls_pilots_ori'}
     target_key = input_key_map.get(input_type, 'H_ls_pilots')
     if target_key not in mat_dict or mat_dict[target_key] is None:
-        for alt in ['H_ls_pilots', 'H_ls', 'H_li', 'H_prac', 'H_perfect']:
+        for alt in ['H_ls_pilots', 'H_ls_pilots_ori', 'H_ls', 'H_li', 'H_prac', 'H_perfect']:
             if alt in mat_dict and mat_dict[alt] is not None:
                 target_key = alt
                 break
@@ -574,7 +636,8 @@ def load_dataset_attention(mat_filepath: str, input_type: str = 'ls') -> dict:
     raw_in = mat_dict[target_key]
     if raw_in.ndim == 3:
         raw_in = format_3d(raw_in)
-        H_in = raw_in[:, p_cols, p_rows] if raw_in.shape[1] == 132 else raw_in[:, p_rows, p_cols]
+        # Spatial indexing: dimension 1 is subcarriers (p_rows), dimension 2 is symbols (p_cols)
+        H_in = raw_in[:, p_rows, p_cols] if raw_in.shape[1] == 132 else raw_in[:, p_cols, p_rows]
     elif raw_in.ndim == 2:
         if raw_in.shape[0] == 88 and raw_in.shape[1] == H_perfect.shape[0]:
             H_in = raw_in.T
@@ -617,23 +680,16 @@ def infer_full_dataset(model, H_perf: np.ndarray, H_in: np.ndarray, batch_size: 
     return np.concatenate(preds, axis=0)
 
 
-def extract_features_with_heads(model, proj_heads: dict, H_in: np.ndarray, batch_size: int = 16,
-                                selected_layers: list = None, lower_range: int = -1):
-    """
-    Extract intermediate representations (both raw layer features and projected features).
-    Returns dict mapping:
-      'layer1' -> raw features [N, 176]
-      'phead_layer1' -> projected features [N, proj_dim]
-    """
+def extract_features_and_projections(model, proj_heads: dict, H_in: np.ndarray, batch_size: int = 16,
+                                     selected_layers: list = None, lower_range: int = -1):
     if selected_layers is None or len(selected_layers) == 0:
-        return {}
+        return {}, {}
     
     N = H_in.shape[0]
-    raw_feats = {lyr: [] for lyr in selected_layers}
-    proj_feats = {lyr: [] for lyr in selected_layers}
-    
     dummy_y = np.zeros((batch_size, 132, 14), dtype=np.complex128)
-
+    layer_feats = {lyr: [] for lyr in selected_layers}
+    layer_projs = {lyr: [] for lyr in selected_layers}
+    
     for start in range(0, N, batch_size):
         end = min(start + batch_size, N)
         x_batch = H_in[start:end]
@@ -643,18 +699,14 @@ def extract_features_with_heads(model, proj_heads: dict, H_in: np.ndarray, batch
         _, feats = model(x_sc, training=False, return_features=True, selected_layers=selected_layers)
         
         for lyr, f_t in zip(selected_layers, feats):
-            raw_feats[lyr].append(f_t.numpy())
-            if lyr in proj_heads:
-                p_t = proj_heads[lyr](f_t, training=False)
-                proj_feats[lyr].append(p_t.numpy())
+            layer_feats[lyr].append(f_t.numpy())
+            p_t = proj_heads[lyr](f_t, training=False)
+            layer_projs[lyr].append(p_t.numpy())
 
-    out_dict = {}
-    for lyr in selected_layers:
-        out_dict[lyr] = np.concatenate(raw_feats[lyr], axis=0) if raw_feats[lyr] else np.empty((0,))
-        if lyr in proj_heads and proj_feats[lyr]:
-            out_dict[f"phead_{lyr}"] = np.concatenate(proj_feats[lyr], axis=0)
-            
-    return out_dict
+    return (
+        {lyr: np.concatenate(layer_feats[lyr], axis=0) for lyr in selected_layers},
+        {lyr: np.concatenate(layer_projs[lyr], axis=0) for lyr in selected_layers}
+    )
 
 
 def save_test_channel_mat(filepath: str, H_perf: np.ndarray, H_perf_ori: np.ndarray,
@@ -667,8 +719,8 @@ def save_test_channel_mat(filepath: str, H_perf: np.ndarray, H_perf_ori: np.ndar
         'H_original_test': H_perf_ori if H_perf_ori is not None else H_perf,
         'H_LS_test': H_in,
         'H_output_test': H_pred,
-        'pilot_rows': p_rows + 1 if np.min(p_rows) == 0 else p_rows,
-        'pilot_cols': p_cols + 1 if np.min(p_cols) == 0 else p_cols,
+        'pilot_rows': p_rows + 1,
+        'pilot_cols': p_cols + 1,
         'test_indices': indices,
         'snr': snr,
         'model_type': model_type
@@ -680,72 +732,181 @@ def save_test_channel_mat(filepath: str, H_perf: np.ndarray, H_perf_ori: np.ndar
 
 
 # =============================================================================
-# 10. PLOTTING HELPERS
+# 10. PLOTTING & VISUALIZATION HELPERS
 # =============================================================================
 def plot_loss_curves(history: dict, save_dir: str):
+    """Plot training loss curves across epochs and save to PDF."""
+    if not history.get('train_loss'):
+        return
     epochs = range(1, len(history['train_loss']) + 1)
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(epochs, history['train_loss'], label='Total Loss', color='blue', lw=2)
-    if 'train_est_loss' in history:
+    if 'train_est_loss' in history and len(history['train_est_loss']) > 0:
         ax.plot(epochs, history['train_est_loss'], label='Estimation Loss (Source)', color='green', lw=1.5)
-    if 'train_coral_loss' in history:
+    if 'train_coral_loss' in history and len(history['train_coral_loss']) > 0:
         ax.plot(epochs, history['train_coral_loss'], label='Projected CORAL Loss', color='red', lw=1.5, ls='--')
-    ax.set_xlabel('Epoch')
-    ax.set_ylabel('Loss')
-    ax.set_title('HA02 Projection-Head CORAL Loss Progression')
+    ax.set_xlabel('Epoch', fontsize=11)
+    ax.set_ylabel('Loss', fontsize=11)
+    ax.set_title('HA02 Projection-Head CORAL Loss Progression', fontsize=12, fontweight='bold')
     ax.grid(True, linestyle='--', alpha=0.6)
-    ax.legend()
+    ax.legend(loc='upper right')
     fig.tight_layout()
     out_pdf = os.path.join(save_dir, 'loss_total.pdf')
-    fig.savefig(out_pdf)
+    fig.savefig(out_pdf, bbox_inches='tight')
     plt.close(fig)
+    print(f"[Save] Exported loss curves plot -> {out_pdf}")
 
 
-def plot_val_curves(history: dict, save_dir: str):
-    if not history.get('val_nmse_tgt'):
+def plot_metric_curves(history: dict, metric_key_prefix: str, ylabel: str, title: str, filename: str, save_dir: str):
+    """Plot 4-way metric curves (Source Train, Source Val, Target Train, Target Val) across checkpoints."""
+    checkpoints = history.get('eval_epochs', [])
+    if not checkpoints or len(checkpoints) == 0:
         return
-    epochs = range(1, len(history['val_nmse_tgt']) + 1)
-    fig, ax = plt.subplots(figsize=(8, 5))
-    if 'val_nmse_src' in history:
-        ax.plot(epochs, history['val_nmse_src'], label='Source Val NMSE', color='blue', lw=1.5)
-    ax.plot(epochs, history['val_nmse_tgt'], label='Target Val NMSE', color='orange', lw=2)
-    ax.set_xlabel('Epoch')
-    ax.set_ylabel('NMSE (dB)')
-    ax.set_title('Validation NMSE (dB) Across Epochs')
+
+    fig, ax = plt.subplots(figsize=(8.5, 5.2))
+    plotted = False
+
+    candidates = [
+        ('Source Train', [f'{metric_key_prefix}_train_src', f'{metric_key_prefix}_train_src_db', f'{metric_key_prefix}_db_train_src'], 'royalblue', '--'),
+        ('Source Val / Test', [f'{metric_key_prefix}_val_src', f'{metric_key_prefix}_val_src_db', f'{metric_key_prefix}_db_val_src'], 'navy', '-'),
+        ('Target Train', [f'{metric_key_prefix}_train_tgt', f'{metric_key_prefix}_train_tgt_db', f'{metric_key_prefix}_db_train_tgt'], 'darkorange', '--'),
+        ('Target Val / Test', [f'{metric_key_prefix}_val_tgt', f'{metric_key_prefix}_val_tgt_db', f'{metric_key_prefix}_db_val_tgt'], 'crimson', '-'),
+    ]
+
+    for label, keys, color, ls in candidates:
+        for k in keys:
+            if k in history and len(history[k]) > 0:
+                ax.plot(checkpoints, history[k], label=label, color=color, lw=1.8, ls=ls)
+                plotted = True
+                break
+
+    if not plotted:
+        plt.close(fig)
+        return
+
+    ax.set_xlabel('Epoch Checkpoint', fontsize=11)
+    ax.set_ylabel(ylabel, fontsize=11)
+    ax.set_title(title, fontsize=12, fontweight='bold')
     ax.grid(True, linestyle='--', alpha=0.6)
-    ax.legend()
+    ax.legend(loc='best')
     fig.tight_layout()
-    out_pdf = os.path.join(save_dir, 'val_nmse_db.pdf')
-    fig.savefig(out_pdf)
+    out_pdf = os.path.join(save_dir, filename)
+    fig.savefig(out_pdf, bbox_inches='tight')
     plt.close(fig)
+    print(f"[Save] Exported {title} plot -> {out_pdf}")
 
 
-def save_channel_plots_pdf(H_true_sample, H_in_sample, H_pred_sample, save_dir, prefix='target_test'):
-    """Side-by-side visualization PDF."""
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-    im0 = axes[0].imshow(np.abs(H_true_sample), aspect='auto', cmap='jet')
-    axes[0].set_title("Ground Truth Channel |H|")
+def plot_all_metrics_summary(history: dict, save_dir: str):
+    """Generate 2x2 multi-panel figure summarizing Loss, NMSE, MSE, and SSIM."""
+    checkpoints = history.get('eval_epochs', [])
+    if not checkpoints or len(checkpoints) == 0:
+        return
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+
+    # Panel 1: Loss
+    epochs_loss = range(1, len(history.get('train_loss', [])) + 1)
+    axes[0, 0].plot(epochs_loss, history.get('train_loss', []), label='Total Loss', color='blue', lw=1.8)
+    if 'train_est_loss' in history and len(history['train_est_loss']) > 0:
+        axes[0, 0].plot(epochs_loss, history['train_est_loss'], label='Est Loss', color='green', lw=1.3)
+    if 'train_coral_loss' in history and len(history['train_coral_loss']) > 0:
+        axes[0, 0].plot(epochs_loss, history['train_coral_loss'], label='CORAL Loss', color='red', lw=1.3, ls='--')
+    axes[0, 0].set_title("Training Loss Progression", fontweight='bold')
+    axes[0, 0].set_xlabel("Epoch")
+    axes[0, 0].set_ylabel("Loss")
+    axes[0, 0].grid(True, linestyle='--', alpha=0.5)
+    axes[0, 0].legend()
+
+    # Panel 2: NMSE (dB)
+    for k, col, ls, lbl in [('nmse_train_src_db', 'royalblue', '--', 'Source Train'),
+                            ('nmse_val_src_db', 'navy', '-', 'Source Val'),
+                            ('nmse_train_tgt_db', 'darkorange', '--', 'Target Train'),
+                            ('nmse_val_tgt_db', 'crimson', '-', 'Target Val')]:
+        if k in history and len(history[k]) > 0:
+            axes[0, 1].plot(checkpoints, history[k], label=lbl, color=col, ls=ls, lw=1.6)
+    axes[0, 1].set_title("NMSE Progression (dB)", fontweight='bold')
+    axes[0, 1].set_xlabel("Epoch")
+    axes[0, 1].set_ylabel("NMSE (dB)")
+    axes[0, 1].grid(True, linestyle='--', alpha=0.5)
+    axes[0, 1].legend()
+
+    # Panel 3: MSE
+    for k, col, ls, lbl in [('mse_train_src', 'royalblue', '--', 'Source Train'),
+                            ('mse_val_src', 'navy', '-', 'Source Val'),
+                            ('mse_train_tgt', 'darkorange', '--', 'Target Train'),
+                            ('mse_val_tgt', 'crimson', '-', 'Target Val')]:
+        if k in history and len(history[k]) > 0:
+            axes[1, 0].plot(checkpoints, history[k], label=lbl, color=col, ls=ls, lw=1.6)
+    axes[1, 0].set_title("Mean Squared Error (MSE)", fontweight='bold')
+    axes[1, 0].set_xlabel("Epoch")
+    axes[1, 0].set_ylabel("MSE")
+    axes[1, 0].grid(True, linestyle='--', alpha=0.5)
+    axes[1, 0].legend()
+
+    # Panel 4: SSIM
+    for k, col, ls, lbl in [('ssim_train_src', 'royalblue', '--', 'Source Train'),
+                            ('ssim_val_src', 'navy', '-', 'Source Val'),
+                            ('ssim_train_tgt', 'darkorange', '--', 'Target Train'),
+                            ('ssim_val_tgt', 'crimson', '-', 'Target Val')]:
+        if k in history and len(history[k]) > 0:
+            axes[1, 1].plot(checkpoints, history[k], label=lbl, color=col, ls=ls, lw=1.6)
+    axes[1, 1].set_title("Structural Similarity (SSIM)", fontweight='bold')
+    axes[1, 1].set_xlabel("Epoch")
+    axes[1, 1].set_ylabel("SSIM")
+    axes[1, 1].grid(True, linestyle='--', alpha=0.5)
+    axes[1, 1].legend()
+
+    fig.tight_layout()
+    out_pdf = os.path.join(save_dir, 'metrics_summary_2x2.pdf')
+    fig.savefig(out_pdf, bbox_inches='tight')
+    plt.close(fig)
+    print(f"[Save] Exported 2x2 metrics summary -> {out_pdf}")
+
+
+def save_single_reconstruction_pdf(H_true, H_in, H_pred, title_str: str, out_filename: str, save_dir: str,
+                                   p_rows: np.ndarray = None, p_cols: np.ndarray = None):
+    """Generate side-by-side 2D heatmap PDF of Ground Truth, Input/LS Pilot Grid, and Model Reconstruction."""
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
+
+    # 1. Ground Truth
+    im0 = axes[0].imshow(np.abs(H_true), aspect='auto', cmap='jet')
+    axes[0].set_title("Ground Truth |H_true|", fontsize=11, fontweight='bold')
     axes[0].set_xlabel("OFDM Symbol")
     axes[0].set_ylabel("Subcarrier")
     plt.colorbar(im0, ax=axes[0])
 
-    if H_in_sample.ndim == 2 and H_in_sample.shape == (132, 14):
-        im1 = axes[1].imshow(np.abs(H_in_sample), aspect='auto', cmap='jet')
+    # 2. Input / Pilot grid
+    if H_in.ndim == 2 and H_in.shape == (132, 14):
+        grid_in = np.abs(H_in)
+    elif (H_in.ndim == 1 and len(H_in) == 88) or (H_in.ndim == 2 and H_in.size == 88):
+        grid_in = np.zeros((132, 14), dtype=np.float32)
+        r = p_rows if p_rows is not None else np.arange(88)
+        c = p_cols if p_cols is not None else np.zeros(88, dtype=int)
+        grid_in[r, c] = np.abs(np.squeeze(H_in))
     else:
-        im1 = axes[1].plot(np.abs(H_in_sample))
-    axes[1].set_title("Input LS Pilot |H_in|")
+        grid_in = np.abs(H_in) if H_in.ndim == 2 else np.abs(H_in).reshape(132, 14)
 
-    im2 = axes[2].imshow(np.abs(H_pred_sample), aspect='auto', cmap='jet')
-    axes[2].set_title("HA02 Estimated Channel |H_pred|")
+    im1 = axes[1].imshow(grid_in, aspect='auto', cmap='jet')
+    axes[1].set_title("Input Channel |H_in|", fontsize=11, fontweight='bold')
+    axes[1].set_xlabel("OFDM Symbol")
+    axes[1].set_ylabel("Subcarrier")
+    plt.colorbar(im1, ax=axes[1])
+
+    # 3. Model Output
+    im2 = axes[2].imshow(np.abs(H_pred), aspect='auto', cmap='jet')
+    nmse_val = 10.0 * np.log10(compute_nmse(H_pred, H_true) + 1e-30)
+    ssim_val = compute_ssim_batch(H_pred[None, ...], H_true[None, ...])
+    axes[2].set_title(f"HA02 Output |H_pred|\n(NMSE: {nmse_val:.2f} dB, SSIM: {ssim_val:.4f})", fontsize=11, fontweight='bold')
     axes[2].set_xlabel("OFDM Symbol")
     axes[2].set_ylabel("Subcarrier")
     plt.colorbar(im2, ax=axes[2])
 
+    fig.suptitle(title_str, fontsize=13, fontweight='bold', y=1.02)
     fig.tight_layout()
-    out_pdf = os.path.join(save_dir, f'{prefix}_sample_reconstruction.pdf')
-    fig.savefig(out_pdf)
+    out_pdf = os.path.join(save_dir, out_filename)
+    fig.savefig(out_pdf, bbox_inches='tight')
     plt.close(fig)
-    print(f"[Save] Exported reconstruction plot -> {out_pdf}")
+    print(f"[Save] Exported channel reconstruction -> {out_pdf}")
 
 
 # =============================================================================
@@ -873,19 +1034,31 @@ def main():
         print(f"  --> {lyr.upper()} Projection Head: [{head.in_dim} -> {head.hidden_dim} -> {head.proj_dim}]")
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=args.lr)
-
     # Pre-build model variables with a dummy forward pass
     dummy_x = tf.zeros((args.batch_size, 88, 2), dtype=tf.float32)
     _, dummy_feats = model(dummy_x, training=False, return_features=True, selected_layers=selected_layers)
     for lyr, f_t in zip(selected_layers, dummy_feats):
         proj_heads[lyr](f_t, training=False)
-
     history = {
         'train_loss': [],
         'train_est_loss': [],
         'train_coral_loss': [],
-        'val_nmse_src': [],
-        'val_nmse_tgt': []
+        'eval_epochs': [],
+        # NMSE (dB)
+        'nmse_train_src_db': [],
+        'nmse_val_src_db': [],
+        'nmse_train_tgt_db': [],
+        'nmse_val_tgt_db': [],
+        # MSE
+        'mse_train_src': [],
+        'mse_val_src': [],
+        'mse_train_tgt': [],
+        'mse_val_tgt': [],
+        # SSIM
+        'ssim_train_src': [],
+        'ssim_val_src': [],
+        'ssim_train_tgt': [],
+        'ssim_val_tgt': []
     }
 
     saved_features = {}
@@ -893,7 +1066,7 @@ def main():
     feature_checkpoint_epochs = {0: 'begin', mid_epoch: 'mid', args.n_epochs - 1: 'last'}
 
     # =========================================================================
-    # COMPILED TRAINING STEP WITH PROJECTION HEADS
+    # COMPILED GPU TRAINING STEPS
     # =========================================================================
     @tf.function
     def _train_step_coral_phead(x_src, y_src, x_tgt):
@@ -946,17 +1119,25 @@ def main():
     print(f"\n[Train] Starting Projection-Head CORAL Training for {args.n_epochs} Epochs ...")
     start_time = time.perf_counter()
 
+    eval_n_tr = min(len(idx_train_src), 64)
+    eval_sub_src_tr = idx_train_src[:eval_n_tr]
+    eval_sub_tgt_tr = idx_train_tgt[:eval_n_tr]
+
     for epoch in range(args.n_epochs):
         # Feature Checkpointing at begin, mid, last
         if args.save_features and epoch in feature_checkpoint_epochs:
             stage = feature_checkpoint_epochs[epoch]
-            src_f = extract_features_with_heads(model, proj_heads, H_in_src[idx_train_src], args.batch_size, selected_layers, args.lower_range)
-            tgt_f = extract_features_with_heads(model, proj_heads, H_in_tgt[idx_train_tgt], args.batch_size, selected_layers, args.lower_range)
-            for k, v in src_f.items():
-                saved_features[f"features_{stage}_{k}_src"] = v
-            for k, v in tgt_f.items():
-                saved_features[f"features_{stage}_{k}_tgt"] = v
-            print(f"  [Features Saved] Captured intermediate & projected activations at {stage} epoch ({epoch+1})")
+            src_raw, src_proj = extract_features_and_projections(model, proj_heads, H_in_src[idx_train_src], args.batch_size, selected_layers, args.lower_range)
+            tgt_raw, tgt_proj = extract_features_and_projections(model, proj_heads, H_in_tgt[idx_train_tgt], args.batch_size, selected_layers, args.lower_range)
+            for k, v in src_raw.items():
+                saved_features[f"features_{stage}_{k}_raw_src"] = v
+            for k, v in src_proj.items():
+                saved_features[f"features_{stage}_{k}_proj_src"] = v
+            for k, v in tgt_raw.items():
+                saved_features[f"features_{stage}_{k}_raw_tgt"] = v
+            for k, v in tgt_proj.items():
+                saved_features[f"features_{stage}_{k}_proj_tgt"] = v
+            print(f"  [Features Saved] Captured intermediate (raw) & projected activations at {stage} epoch ({epoch+1}) for layers: {selected_layers}")
 
         # Shuffle training sets
         p_src = np.random.permutation(len(idx_train_src))
@@ -994,17 +1175,47 @@ def main():
         history['train_est_loss'].append(avg_est)
         history['train_coral_loss'].append(avg_coral)
 
-        # Periodic Validation
-        pred_val_src = infer_full_dataset(model, H_perf_src[idx_val_src], H_in_src[idx_val_src], args.batch_size, args.lower_range)
-        val_nmse_src_db = compute_nmse_db(pred_val_src, H_perf_src[idx_val_src])
-        history['val_nmse_src'].append(val_nmse_src_db)
+        # Track metrics (NMSE, MSE, SSIM) on train & val splits
+        eval_interval = 1 if (args.n_epochs <= 50 or args.test_code) else 5
+        if (epoch + 1) % eval_interval == 0 or epoch == args.n_epochs - 1:
+            pred_src_tr = infer_full_dataset(model, H_perf_src[eval_sub_src_tr], H_in_src[eval_sub_src_tr], args.batch_size, args.lower_range)
+            pred_src_val = infer_full_dataset(model, H_perf_src[idx_val_src], H_in_src[idx_val_src], args.batch_size, args.lower_range)
+            pred_tgt_tr = infer_full_dataset(model, H_perf_tgt[eval_sub_tgt_tr], H_in_tgt[eval_sub_tgt_tr], args.batch_size, args.lower_range)
+            pred_tgt_val = infer_full_dataset(model, H_perf_tgt[idx_val_tgt], H_in_tgt[idx_val_tgt], args.batch_size, args.lower_range)
 
-        pred_val_tgt = infer_full_dataset(model, H_perf_tgt[idx_val_tgt], H_in_tgt[idx_val_tgt], args.batch_size, args.lower_range)
-        val_nmse_tgt_db = compute_nmse_db(pred_val_tgt, H_perf_tgt[idx_val_tgt])
-        history['val_nmse_tgt'].append(val_nmse_tgt_db)
+            nmse_s_tr = compute_nmse_db(pred_src_tr, H_perf_src[eval_sub_src_tr])
+            nmse_s_val = compute_nmse_db(pred_src_val, H_perf_src[idx_val_src])
+            nmse_t_tr = compute_nmse_db(pred_tgt_tr, H_perf_tgt[eval_sub_tgt_tr])
+            nmse_t_val = compute_nmse_db(pred_tgt_val, H_perf_tgt[idx_val_tgt])
 
-        if (epoch + 1) % 10 == 0 or epoch == 0 or epoch == args.n_epochs - 1:
-            print(f"Epoch {epoch+1:03d}/{args.n_epochs:03d} | Loss: {avg_loss:.4f} (Est: {avg_est:.4f}, Proj-CORAL: {avg_coral:.4f}) | Val Target NMSE: {val_nmse_tgt_db:.2f} dB")
+            mse_s_tr = compute_mmse(pred_src_tr, H_perf_src[eval_sub_src_tr])
+            mse_s_val = compute_mmse(pred_src_val, H_perf_src[idx_val_src])
+            mse_t_tr = compute_mmse(pred_tgt_tr, H_perf_tgt[eval_sub_tgt_tr])
+            mse_t_val = compute_mmse(pred_tgt_val, H_perf_tgt[idx_val_tgt])
+
+            ssim_s_tr = compute_ssim_batch(pred_src_tr, H_perf_src[eval_sub_src_tr])
+            ssim_s_val = compute_ssim_batch(pred_src_val, H_perf_src[idx_val_src])
+            ssim_t_tr = compute_ssim_batch(pred_tgt_tr, H_perf_tgt[eval_sub_tgt_tr])
+            ssim_t_val = compute_ssim_batch(pred_tgt_val, H_perf_tgt[idx_val_tgt])
+
+            history['eval_epochs'].append(epoch + 1)
+            history['nmse_train_src_db'].append(nmse_s_tr)
+            history['nmse_val_src_db'].append(nmse_s_val)
+            history['nmse_train_tgt_db'].append(nmse_t_tr)
+            history['nmse_val_tgt_db'].append(nmse_t_val)
+
+            history['mse_train_src'].append(mse_s_tr)
+            history['mse_val_src'].append(mse_s_val)
+            history['mse_train_tgt'].append(mse_t_tr)
+            history['mse_val_tgt'].append(mse_t_val)
+
+            history['ssim_train_src'].append(ssim_s_tr)
+            history['ssim_val_src'].append(ssim_s_val)
+            history['ssim_train_tgt'].append(ssim_t_tr)
+            history['ssim_val_tgt'].append(ssim_t_val)
+
+            print(f"Epoch {epoch+1:03d}/{args.n_epochs:03d} | Loss: {avg_loss:.4f} (Est: {avg_est:.4f}, Proj-CORAL: {avg_coral:.4f}) | "
+                  f"Target NMSE: {nmse_t_val:.2f} dB (Src: {nmse_s_val:.2f} dB) | Target SSIM: {ssim_t_val:.4f}")
 
     total_time = time.perf_counter() - start_time
     print(f"\n[Done] Training completed in {total_time:.2f} seconds ({total_time / args.n_epochs:.3f} s/epoch).")
@@ -1016,22 +1227,25 @@ def main():
     print("                      FINAL TEST PERFORMANCE SUMMARY                  ")
     print("=" * 80)
 
-    # 1. Source Test Evaluation
+    # 1. Source and Target Test Predictions
     test_pred_src = infer_full_dataset(model, H_perf_src[idx_test_src], H_in_src[idx_test_src], args.batch_size, args.lower_range)
     test_nmse_db_src = compute_nmse_db(test_pred_src, H_perf_src[idx_test_src])
     test_mmse_src = compute_mmse(test_pred_src, H_perf_src[idx_test_src])
     test_ssim_src = compute_ssim_batch(test_pred_src, H_perf_src[idx_test_src])
-    print(f"  Source Domain -> NMSE: {test_nmse_db_src:.2f} dB | MMSE: {test_mmse_src:.6e} | SSIM: {test_ssim_src:.4f}")
 
-    # 2. Target Test Evaluation
     test_pred_tgt = infer_full_dataset(model, H_perf_tgt[idx_test_tgt], H_in_tgt[idx_test_tgt], args.batch_size, args.lower_range)
     test_nmse_db_tgt = compute_nmse_db(test_pred_tgt, H_perf_tgt[idx_test_tgt])
     test_mmse_tgt = compute_mmse(test_pred_tgt, H_perf_tgt[idx_test_tgt])
     test_ssim_tgt = compute_ssim_batch(test_pred_tgt, H_perf_tgt[idx_test_tgt])
+
+    train_pred_src_sample = infer_full_dataset(model, H_perf_src[idx_train_src[:10]], H_in_src[idx_train_src[:10]], args.batch_size, args.lower_range)
+    train_pred_tgt_sample = infer_full_dataset(model, H_perf_tgt[idx_train_tgt[:10]], H_in_tgt[idx_train_tgt][:10], args.batch_size, args.lower_range)
+
+    print(f"  Source Domain -> NMSE: {test_nmse_db_src:.2f} dB | MMSE: {test_mmse_src:.6e} | SSIM: {test_ssim_src:.4f}")
     print(f"  Target Domain -> NMSE: {test_nmse_db_tgt:.2f} dB | MMSE: {test_mmse_tgt:.6e} | SSIM: {test_ssim_tgt:.4f}")
     print("=" * 80)
 
-    # 3. Save testChannel_source.mat and testChannel_target.mat
+    # 2. Save testChannel_source.mat and testChannel_target.mat
     save_test_channel_mat(
         os.path.join(output_dir, 'testChannel_source.mat'),
         H_perf_src[idx_test_src],
@@ -1053,6 +1267,33 @@ def main():
         H_li_tgt[idx_test_tgt] if H_li_tgt is not None else None,
         idx_test_tgt, args.snr, args.type
     )
+
+    # 3. Save Plotted Channel Samples to sample_reconstructions.mat
+    samples_dict = {
+        'source_train_true': H_perf_src[idx_train_src[0]],
+        'source_train_in':   H_in_src[idx_train_src[0]],
+        'source_train_pred': train_pred_src_sample[0],
+
+        'source_test_true':  H_perf_src[idx_test_src[0]],
+        'source_test_in':    H_in_src[idx_test_src[0]],
+        'source_test_pred':  test_pred_src[0],
+
+        'target_train_true': H_perf_tgt[idx_train_tgt[0]],
+        'target_train_in':   H_in_tgt[idx_train_tgt[0]],
+        'target_train_pred': train_pred_tgt_sample[0],
+
+        'target_test_true':  H_perf_tgt[idx_test_tgt[0]],
+        'target_test_in':    H_in_tgt[idx_test_tgt[0]],
+        'target_test_pred':  test_pred_tgt[0],
+
+        'pilot_rows': p_rows + 1,
+        'pilot_cols': p_cols + 1,
+        'snr': args.snr,
+        'input_type': args.type,
+        'model_type': 'HA02_pHead'
+    }
+    savemat(os.path.join(output_dir, 'sample_reconstructions.mat'), samples_dict)
+    print(f"[Save] Exported sample reconstruction grids MAT file -> {os.path.join(output_dir, 'sample_reconstructions.mat')}")
 
     # 4. Save final_epoch.txt Report
     txt_path = os.path.join(output_dir, 'final_epoch.txt')
@@ -1108,7 +1349,7 @@ def main():
     savemat(eval_path, eval_dict)
     print(f"[Save] Evaluation results -> {eval_path}")
 
-    # 6. Save Training History
+    # 6. Save Training History MAT
     history_save_path = os.path.join(output_dir, 'training_history.mat')
     savemat(history_save_path, {k: np.array(v) for k, v in history.items()})
     print(f"[Save] Saved training history -> {history_save_path}")
@@ -1122,14 +1363,33 @@ def main():
         savemat(feat_save_path, saved_features, do_compression=True)
         print(f"[Save] Exported extracted raw and projected features -> {feat_save_path}")
 
-    # 8. Save Visualizations
+    # 8. Save All Visualizations
     try:
+        # A. Training Loss Progression (Total, Est, CORAL)
         plot_loss_curves(history, output_dir)
-        plot_val_curves(history, output_dir)
-        if len(test_pred_tgt) > 0:
-            sample_true = H_perf_tgt[idx_test_tgt[0]]
-            sample_in = H_in_tgt[idx_test_tgt[0]]
-            save_channel_plots_pdf(sample_true, sample_in, test_pred_tgt[0], output_dir, prefix='target_test')
+
+        # B. NMSE (dB) curves (Source Train, Source Val, Target Train, Target Val)
+        plot_metric_curves(history, 'nmse', 'NMSE (dB)', 'NMSE (dB) Across Epochs', 'metrics_nmse_db.pdf', output_dir)
+
+        # C. MSE curves (Source Train, Source Val, Target Train, Target Val)
+        plot_metric_curves(history, 'mse', 'MSE', 'Mean Squared Error (MSE) Across Epochs', 'metrics_mse.pdf', output_dir)
+
+        # D. SSIM curves (Source Train, Source Val, Target Train, Target Val)
+        plot_metric_curves(history, 'ssim', 'SSIM', 'Structural Similarity (SSIM) Across Epochs', 'metrics_ssim.pdf', output_dir)
+
+        # E. Consolidated 2x2 Metrics Summary
+        plot_all_metrics_summary(history, output_dir)
+
+        # F. Individual Channel Reconstructions (Ground Truth, Input/LS Pilots, Output)
+        save_single_reconstruction_pdf(samples_dict['source_train_true'], samples_dict['source_train_in'], samples_dict['source_train_pred'],
+                                       "Source Domain - Training Sample", "recon_source_train.pdf", output_dir, p_rows, p_cols)
+        save_single_reconstruction_pdf(samples_dict['source_test_true'], samples_dict['source_test_in'], samples_dict['source_test_pred'],
+                                       "Source Domain - Testing Sample", "recon_source_test.pdf", output_dir, p_rows, p_cols)
+        save_single_reconstruction_pdf(samples_dict['target_train_true'], samples_dict['target_train_in'], samples_dict['target_train_pred'],
+                                       "Target Domain - Training Sample", "recon_target_train.pdf", output_dir, p_rows, p_cols)
+        save_single_reconstruction_pdf(samples_dict['target_test_true'], samples_dict['target_test_in'], samples_dict['target_test_pred'],
+                                       "Target Domain - Testing Sample", "recon_target_test.pdf", output_dir, p_rows, p_cols)
+
     except Exception as e:
         print(f"[Plot Warning] Failed to render PDF plots: {e}")
 

@@ -1,6 +1,6 @@
 """
 ====================================================================================================
-JMMD cGAN Domain Adaptation for NTN Channel Estimation (OpenNTN) - High-Performance Edition
+JMMD cGAN Domain Adaptation for NTN Channel Estimation (OpenNTN & MATLAB) - High-Performance
 ====================================================================================================
 
 Overview
@@ -29,10 +29,36 @@ Dataset Splitting (3-Way Split)
 - Test Set (Default 15%): Final held-out evaluation exported to `testChannel_source.mat` and 
   `testChannel_target.mat` for standalone MATLAB BER simulations.
 
+Adaptive Dataset Directory Input Parser (`--source-dir` & `--target-dir`):
+-------------------------------------------------------------------------
+The input parser supports 3 flexible input formats without requiring you to specify whether a dataset 
+is from MATLAB or OpenNTN:
+
+1. Scenario Folder Name / Substring (Auto-Discovered):
+   You can pass just the folder name or scenario substring. The loader automatically scans both 
+   `generatedChan/MATLAB/` and `generatedChan/OpenNTN/` to find the matching directory:
+     --source-dir A100_2p18e9_600km_70deg_30kHz
+     --target-dir DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps
+
+2. Relative Path from Project Root:
+   You can pass the relative path:
+     --source-dir generatedChan/MATLAB/A100_2p18e9_600km_70deg_30kHz
+     --target-dir generatedChan/OpenNTN/DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps
+
+3. Full Absolute Path:
+   You can pass the full path on disk:
+     --source-dir "C:/Users/.../generatedChan/MATLAB/A100_2p18e9_600km_70deg_30kHz"
+     --target-dir "C:/Users/.../generatedChan/OpenNTN/DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps"
+
+How the Loader Resolves Files:
+- Automatically maps requested `--snr` (e.g. 5) to matching subfolder (`SNR_5dB`, `5dB`, `SNR_5`, `5`, etc.).
+- Automatically detects the dataset `.mat` file (`matlabNTN.mat` or `channel_dur_randomizedUE.mat`).
+- Supports both MATLAB v7 (scipy.io) and v7.3 HDF5 (h5py) file structures seamlessly.
+
 Usage Examples
 --------------
-    # Run full JMMD cGAN training on GPU at SNR = 5 dB with layer extraction on bottleneck (d4)
-    python run_JMMD_cGAN.py --snr 5 --jmmd-layers d4 --domain-weight 0.5 --save-features
+    # Run full JMMD cGAN training on GPU at SNR = 5 dB with MATLAB A100 vs OpenNTN
+    python run_JMMD_cGAN.py --source-dir A100_2p18e9_600km_70deg_30kHz --target-dir DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps --snr 5 --jmmd-layers d4 --domain-weight 0.5 --save-features
 
     # Run multi-layer JMMD (d3 + d4) cGAN
     python run_JMMD_cGAN.py --snr 5 --jmmd-layers d3 d4 --domain-weight 0.5
@@ -475,39 +501,78 @@ def val_step_fast(generator, val_input, val_real):
 # =============================================================================
 # 4. DATASET RESOLUTION & EXTRACTION HELPERS
 # =============================================================================
-def get_mat_file(dir_path: str, snr: int = 5) -> str:
-    """Resolve MAT file path dynamically."""
-    if not dir_path or not os.path.exists(dir_path):
-        if DEFAULT_SOURCE_DIR and os.path.exists(DEFAULT_SOURCE_DIR):
-            print(f"[Warning] Dataset path '{dir_path}' not found, falling back to '{DEFAULT_SOURCE_DIR}'")
-            dir_path = DEFAULT_SOURCE_DIR
-        else:
-            return dir_path
-
-    if os.path.isfile(dir_path) and dir_path.endswith('.mat'):
-        return dir_path
-
-    candidates = [
-        f"{snr}dB", f"SNR_{snr}dB", f"SNR_{snr}", str(snr),
-        f"{snr}db", f"snr_{snr}db", f"snr_{snr}"
-    ]
-    for cand_name in candidates:
-        cand_dir = os.path.join(dir_path, cand_name)
-        if os.path.exists(cand_dir) and os.path.isdir(cand_dir):
-            mat_files = [f for f in os.listdir(cand_dir) if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features'))]
-            if mat_files:
-                return os.path.join(cand_dir, mat_files[0])
-
-    mat_files = [f for f in os.listdir(dir_path) if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features'))]
-    if mat_files:
-        return os.path.join(dir_path, mat_files[0])
-
-    for root, _, files in os.walk(dir_path):
-        for f in files:
-            if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features')):
+def find_any_mat_file(base_dir: str) -> str:
+    """Recursively search base_dir for the first valid channel .mat file."""
+    if not os.path.exists(base_dir):
+        return None
+    for root, _, files in os.walk(base_dir):
+        for f in sorted(files):
+            if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features', 'synthesized_results')):
                 return os.path.join(root, f)
+    return None
 
-    return os.path.join(dir_path, 'matlabNTN.mat')
+
+def get_mat_file(data_root: str, snr: int = 5) -> str:
+    """
+    Robustly locate the .mat data file for the requested SNR, supporting:
+    - SNR folder variations: 'SNR_-10dB', '-10dB', 'SNR_-10', '-10', '5dB', etc.
+    - Relative paths from workspace root or script directory
+    - Scenario name substring matching (e.g. 'A100_2p18e9...' matching in generatedChan/MATLAB or generatedChan/OpenNTN)
+    """
+    if os.path.isfile(data_root) and data_root.endswith('.mat'):
+        return os.path.abspath(data_root)
+
+    candidate_roots = []
+    if data_root:
+        if os.path.isabs(data_root):
+            candidate_roots.append(data_root)
+        else:
+            candidate_roots.append(os.path.abspath(data_root))
+            candidate_roots.append(os.path.join(project_root, data_root))
+            candidate_roots.append(os.path.join(current_dir, data_root))
+            
+            # Scenario substring search in generatedChan/
+            for parent in [os.path.join(project_root, 'generatedChan', 'MATLAB'),
+                           os.path.join(project_root, 'generatedChan', 'OpenNTN')]:
+                if os.path.isdir(parent):
+                    base_name = os.path.basename(data_root.rstrip('\\/'))
+                    for entry in os.listdir(parent):
+                        if base_name.lower() in entry.lower():
+                            candidate_roots.append(os.path.join(parent, entry))
+
+    # Add default fallbacks
+    candidate_roots.extend([
+        os.path.join(project_root, 'generatedChan', 'OpenNTN', 'DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps'),
+        os.path.join(project_root, 'generatedChan', 'OpenNTN', 'DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps'),
+        os.path.join(project_root, 'generatedChan', 'MATLAB', 'A100_2p18e9_600km_70deg_30kHz')
+    ])
+
+    snr_variations = [
+        f"SNR_{snr}dB",
+        f"{snr}dB",
+        f"SNR_{snr}",
+        f"{snr}",
+        f"SNR_{snr:02d}dB",
+        f"snr_{snr}db"
+    ]
+
+    for root in candidate_roots:
+        if not os.path.isdir(root):
+            continue
+        for snr_var in snr_variations:
+            snr_dir = os.path.join(root, snr_var)
+            if os.path.isdir(snr_dir):
+                mat_file = find_any_mat_file(snr_dir)
+                if mat_file:
+                    return os.path.abspath(mat_file)
+        mat_file = find_any_mat_file(root)
+        if mat_file:
+            return os.path.abspath(mat_file)
+
+    raise FileNotFoundError(
+        f"Could not find any .mat data files for SNR={snr} in any searched location.\n"
+        f"Searched roots: {candidate_roots}"
+    )
 
 
 def load_dataset_cgan(mat_filepath: str, input_type: str = 'LS') -> dict:
@@ -548,12 +613,8 @@ def load_dataset_cgan(mat_filepath: str, input_type: str = 'LS') -> dict:
     if H_perfect_ori is None:
         H_perfect_ori = H_perfect
 
-    p_cols = np.squeeze(mat_dict.get('pilot_cols', np.arange(88)))
-    p_rows = np.squeeze(mat_dict.get('pilot_rows', np.arange(88)))
-    if np.min(p_cols) >= 1:
-        p_cols = p_cols - 1
-    if np.min(p_rows) >= 1:
-        p_rows = p_rows - 1
+    p_cols = np.squeeze(mat_dict['pilot_cols']).astype(int) - 1
+    p_rows = np.squeeze(mat_dict['pilot_rows']).astype(int) - 1
 
     input_key_map = {'LS': 'H_LS', 'LI': 'H_LI', 'PRAC': 'H_prac'}
     target_key = input_key_map.get(input_type, 'H_LS')
@@ -672,8 +733,8 @@ def save_test_channel_mat(filepath: str, H_perf: np.ndarray, H_perf_ori: np.ndar
         'H_original_test': H_perf_ori if H_perf_ori is not None else H_perf,
         'H_LS_test': H_in,
         'H_output_test': H_pred,
-        'pilot_rows': p_rows + 1 if np.min(p_rows) == 0 else p_rows,
-        'pilot_cols': p_cols + 1 if np.min(p_cols) == 0 else p_cols,
+        'pilot_rows': p_rows + 1,
+        'pilot_cols': p_cols + 1,
         'test_indices': indices,
         'snr': snr,
         'model_type': model_type

@@ -1,6 +1,6 @@
 """
 ====================================================================================================
-JMMD (Joint Maximum Mean Discrepancy) Domain Adaptation with HA02 Attention Model (OpenNTN)
+JMMD (Joint Maximum Mean Discrepancy) Domain Adaptation with HA02 Attention Model (OpenNTN & MATLAB)
 ====================================================================================================
 
 Overview:
@@ -37,10 +37,36 @@ Available JMMD Extraction Layers (`--jmmd-layers`):
 - `layer2`: Post-ResConv Decoder feature (Z_conv) -> Shape: [B, 352] (Aligns spatial convolutional RKHS kernel)
 - `layer3`: Latent Grid representation (Z_grid) -> Shape: [B, 2] (Aligns global energy distribution)
 
+Adaptive Dataset Directory Input Parser (`--source-dir` & `--target-dir`):
+-------------------------------------------------------------------------
+The input parser supports 3 flexible input formats without requiring you to specify whether a dataset 
+is from MATLAB or OpenNTN:
+
+1. Scenario Folder Name / Substring (Auto-Discovered):
+   You can pass just the folder name or scenario substring. The loader automatically scans both 
+   `generatedChan/MATLAB/` and `generatedChan/OpenNTN/` to find the matching directory:
+     --source-dir A100_2p18e9_600km_70deg_30kHz
+     --target-dir DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps
+
+2. Relative Path from Project Root:
+   You can pass the relative path:
+     --source-dir generatedChan/MATLAB/A100_2p18e9_600km_70deg_30kHz
+     --target-dir generatedChan/OpenNTN/DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps
+
+3. Full Absolute Path:
+   You can pass the full path on disk:
+     --source-dir "C:/Users/.../generatedChan/MATLAB/A100_2p18e9_600km_70deg_30kHz"
+     --target-dir "C:/Users/.../generatedChan/OpenNTN/DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps"
+
+How the Loader Resolves Files:
+- Automatically maps requested `--snr` (e.g. 5) to matching subfolder (`SNR_5dB`, `5dB`, `SNR_5`, `5`, etc.).
+- Automatically detects the dataset `.mat` file (`matlabNTN.mat` or `channel_dur_randomizedUE.mat`).
+- Supports both MATLAB v7 (scipy.io) and v7.3 HDF5 (h5py) file structures seamlessly.
+
 Usage Examples:
 ---------------
-    # Multi-layer JMMD domain adaptation (Layer 1 + Layer 2 at SNR = 5 dB)
-    python run_JMMD_LS_Attention.py --snr 5 --jmmd-layers layer1 layer2 --domain-weight 0.5 --save-features
+    # Multi-layer JMMD domain adaptation with MATLAB A100 vs OpenNTN at SNR = 5 dB
+    python run_JMMD_LS_Attention.py --source-dir A100_2p18e9_600km_70deg_30kHz --target-dir DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps --snr 5 --jmmd-layers layer1 layer2 --domain-weight 0.5 --save-features
 
     # Single-layer JMMD on Transformer Encoder (Layer 1 only)
     python run_JMMD_LS_Attention.py --snr 5 --jmmd-layers layer1 --domain-weight 0.5
@@ -476,41 +502,80 @@ def compute_ssim_batch(H_pred: np.ndarray, H_true: np.ndarray) -> float:
 
 
 # =============================================================================
-# 7. DATASET LOADING & RESOLUTION
+# 7. ADAPTIVE DATASET RESOLUTION & LOADING (MATLAB & OpenNTN Compatible)
 # =============================================================================
-def get_mat_file(dir_path: str, snr: int = 5) -> str:
-    """Resolve dataset path dynamically."""
-    if not dir_path or not os.path.exists(dir_path):
-        if SOURCE_DIR and os.path.exists(SOURCE_DIR):
-            print(f"[Warning] Dataset path '{dir_path}' not found, falling back to '{SOURCE_DIR}'")
-            dir_path = SOURCE_DIR
-        else:
-            return dir_path
-
-    if os.path.isfile(dir_path) and dir_path.endswith('.mat'):
-        return dir_path
-
-    candidates = [
-        f"{snr}dB", f"SNR_{snr}dB", f"SNR_{snr}", str(snr),
-        f"{snr}db", f"snr_{snr}db", f"snr_{snr}"
-    ]
-    for cand_name in candidates:
-        cand_dir = os.path.join(dir_path, cand_name)
-        if os.path.exists(cand_dir) and os.path.isdir(cand_dir):
-            mat_files = [f for f in os.listdir(cand_dir) if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features'))]
-            if mat_files:
-                return os.path.join(cand_dir, mat_files[0])
-
-    mat_files = [f for f in os.listdir(dir_path) if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features'))]
-    if mat_files:
-        return os.path.join(dir_path, mat_files[0])
-
-    for root, _, files in os.walk(dir_path):
-        for f in files:
-            if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features')):
+def find_any_mat_file(base_dir: str) -> str:
+    """Recursively search base_dir for the first valid channel .mat file."""
+    if not os.path.exists(base_dir):
+        return None
+    for root, _, files in os.walk(base_dir):
+        for f in sorted(files):
+            if f.endswith('.mat') and not f.startswith(('inferredChannel', 'testChannel', 'training_history', 'extracted_features', 'synthesized_results')):
                 return os.path.join(root, f)
+    return None
 
-    return os.path.join(dir_path, 'matlabNTN.mat')
+
+def get_mat_file(data_root: str, snr: int = 5) -> str:
+    """
+    Robustly locate the .mat data file for the requested SNR, supporting:
+    - SNR folder variations: 'SNR_-10dB', '-10dB', 'SNR_-10', '-10', '5dB', etc.
+    - Relative paths from workspace root or script directory
+    - Scenario name substring matching (e.g. 'A100_2p18e9...' matching in generatedChan/MATLAB or generatedChan/OpenNTN)
+    """
+    if os.path.isfile(data_root) and data_root.endswith('.mat'):
+        return os.path.abspath(data_root)
+
+    candidate_roots = []
+    if data_root:
+        if os.path.isabs(data_root):
+            candidate_roots.append(data_root)
+        else:
+            candidate_roots.append(os.path.abspath(data_root))
+            candidate_roots.append(os.path.join(project_root, data_root))
+            candidate_roots.append(os.path.join(current_dir, data_root))
+            
+            # Scenario substring search in generatedChan/
+            for parent in [os.path.join(project_root, 'generatedChan', 'MATLAB'),
+                           os.path.join(project_root, 'generatedChan', 'OpenNTN')]:
+                if os.path.isdir(parent):
+                    base_name = os.path.basename(data_root.rstrip('\\/'))
+                    for entry in os.listdir(parent):
+                        if base_name.lower() in entry.lower():
+                            candidate_roots.append(os.path.join(parent, entry))
+
+    # Add default fallbacks
+    candidate_roots.extend([
+        os.path.join(project_root, 'generatedChan', 'OpenNTN', 'DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps'),
+        os.path.join(project_root, 'generatedChan', 'OpenNTN', 'DUR100nsFix_2p18G_600km_70deg_r15km_30to40mps'),
+        os.path.join(project_root, 'generatedChan', 'MATLAB', 'A100_2p18e9_600km_70deg_30kHz')
+    ])
+
+    snr_variations = [
+        f"SNR_{snr}dB",
+        f"{snr}dB",
+        f"SNR_{snr}",
+        f"{snr}",
+        f"SNR_{snr:02d}dB",
+        f"snr_{snr}db"
+    ]
+
+    for root in candidate_roots:
+        if not os.path.isdir(root):
+            continue
+        for snr_var in snr_variations:
+            snr_dir = os.path.join(root, snr_var)
+            if os.path.isdir(snr_dir):
+                mat_file = find_any_mat_file(snr_dir)
+                if mat_file:
+                    return os.path.abspath(mat_file)
+        mat_file = find_any_mat_file(root)
+        if mat_file:
+            return os.path.abspath(mat_file)
+
+    raise FileNotFoundError(
+        f"Could not find any .mat data files for SNR={snr} in any searched location.\n"
+        f"Searched roots: {candidate_roots}"
+    )
 
 
 def load_dataset_attention(mat_filepath: str, input_type: str = 'ls') -> dict:
@@ -535,6 +600,8 @@ def load_dataset_attention(mat_filepath: str, input_type: str = 'ls') -> dict:
                     if isinstance(data, np.ndarray) and data.dtype.names is not None:
                         if 'real' in data.dtype.names and 'imag' in data.dtype.names:
                             data = data['real'] + 1j * data['imag']
+                        elif 'r' in data.dtype.names and 'i' in data.dtype.names:
+                            data = data['r'] + 1j * data['i']
                     mat_dict[k] = data
     else:
         mat = loadmat(mat_filepath)
@@ -552,19 +619,16 @@ def load_dataset_attention(mat_filepath: str, input_type: str = 'ls') -> dict:
             break
     mat_dict['H_perfect_ori'] = H_perfect_ori if H_perfect_ori is not None else H_perfect
 
-    p_cols = np.squeeze(mat_dict.get('pilot_cols', np.arange(88)))
-    p_rows = np.squeeze(mat_dict.get('pilot_rows', np.arange(88)))
-    if np.min(p_cols) >= 1:
-        p_cols = p_cols - 1
-    if np.min(p_rows) >= 1:
-        p_rows = p_rows - 1
+    p_cols = np.squeeze(mat_dict['pilot_cols']).astype(int) - 1
+    p_rows = np.squeeze(mat_dict['pilot_rows']).astype(int) - 1
     mat_dict['pilot_cols'] = p_cols
     mat_dict['pilot_rows'] = p_rows
 
-    input_key_map = {'ls': 'H_ls_pilots', 'prac': 'H_prac', 'li': 'H_li'}
+    # Extract 88 pilot inputs
+    input_key_map = {'ls': 'H_ls_pilots', 'prac': 'H_prac', 'li': 'H_li', 'ls_ori': 'H_ls_pilots_ori'}
     target_key = input_key_map.get(input_type, 'H_ls_pilots')
     if target_key not in mat_dict or mat_dict[target_key] is None:
-        for alt in ['H_ls_pilots', 'H_ls', 'H_li', 'H_prac', 'H_perfect']:
+        for alt in ['H_ls_pilots', 'H_ls_pilots_ori', 'H_ls', 'H_li', 'H_prac', 'H_perfect']:
             if alt in mat_dict and mat_dict[alt] is not None:
                 target_key = alt
                 break
@@ -572,7 +636,8 @@ def load_dataset_attention(mat_filepath: str, input_type: str = 'ls') -> dict:
     raw_in = mat_dict[target_key]
     if raw_in.ndim == 3:
         raw_in = format_3d(raw_in)
-        H_in = raw_in[:, p_cols, p_rows] if raw_in.shape[1] == 132 else raw_in[:, p_rows, p_cols]
+        # Spatial indexing: dimension 1 is subcarriers (p_rows), dimension 2 is symbols (p_cols)
+        H_in = raw_in[:, p_rows, p_cols] if raw_in.shape[1] == 132 else raw_in[:, p_cols, p_rows]
     elif raw_in.ndim == 2:
         if raw_in.shape[0] == 88 and raw_in.shape[1] == H_perfect.shape[0]:
             H_in = raw_in.T
@@ -647,8 +712,8 @@ def save_test_channel_mat(filepath: str, H_perf: np.ndarray, H_perf_ori: np.ndar
         'H_original_test': H_perf_ori if H_perf_ori is not None else H_perf,
         'H_LS_test': H_in,
         'H_output_test': H_pred,
-        'pilot_rows': p_rows + 1 if np.min(p_rows) == 0 else p_rows,
-        'pilot_cols': p_cols + 1 if np.min(p_cols) == 0 else p_cols,
+        'pilot_rows': p_rows + 1,
+        'pilot_cols': p_cols + 1,
         'test_indices': indices,
         'snr': snr,
         'model_type': model_type
