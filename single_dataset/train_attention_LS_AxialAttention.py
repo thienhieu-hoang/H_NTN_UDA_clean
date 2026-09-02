@@ -269,21 +269,63 @@ SNR_FOLDER_MAP = {
     15:  '15dB',
 }
 
-def find_any_mat_file(base_dir: str) -> str:
+def find_channel_mat_file(base_dir: str) -> str:
+    """
+    Find and return the primary channel .mat dataset file in base_dir.
+    Prioritizes known dataset filenames (e.g. 'matlabNTN.mat', 'channel_dur_randomizedUE.mat')
+    and filters out output/artifact/intermediate files in case other .mat files exist.
+    """
     if not os.path.exists(base_dir):
         return None
+
+    # Preferred dataset filename candidates (checked in order of priority)
+    primary_dataset_names = [
+        'matlabNTN.mat',
+        'channel_dur_randomizedUE.mat',
+        'channel_dur.mat',
+        'channel_sur.mat',
+        'channel.mat',
+        'dataset.mat',
+        'data.mat',
+    ]
+
+    # 1. Direct match with prioritized filenames in base_dir
+    for name in primary_dataset_names:
+        candidate = os.path.join(base_dir, name)
+        if os.path.isfile(candidate):
+            return candidate
+
+    # 2. Case-insensitive search for primary dataset filenames
+    if os.path.isdir(base_dir):
+        files_in_dir = os.listdir(base_dir)
+        for name in primary_dataset_names:
+            for f in files_in_dir:
+                if f.lower() == name.lower() and os.path.isfile(os.path.join(base_dir, f)):
+                    return os.path.join(base_dir, f)
+
+    # 3. Exclude any known output / artifact / temporary .mat files
+    excluded_prefixes = (
+        'testChannel', 'inferredChannel', 'training_history',
+        'channel_grids', 'synthesized', 'evaluation_results',
+        'sample_', 'extracted_features', 'loss_', 'nmse_', 'best_', 'final_'
+    )
+
+    # Search for any valid channel .mat file inside base_dir
     for root, _, files in os.walk(base_dir):
         for f in sorted(files):
-            if f.endswith('.mat'):
+            if f.endswith('.mat') and not f.startswith(excluded_prefixes):
                 return os.path.join(root, f)
+
     return None
+
 
 def get_data_path(data_root: str, snr: int, is_test_code: bool = False) -> str:
     """
     Robustly locate the .mat data file for the requested SNR, supporting:
-    - SNR folder variations: 'SNR_-10dB', '-10dB', 'SNR_-10', '-10'
+    - SNR folder variations: 'SNR_-10dB', '-10dB', 'SNR_-10', '-10', 'SNR_-10dB'
+    - Dataset filename variations: 'matlabNTN.mat', 'channel_dur_randomizedUE.mat', etc.
     - Relative paths from workspace root or script directory
-    - Scenario name substring matching (e.g., 'A100_2p18e9...' matching 'sampleWiseDoppler_wGeometry_A100_...')
+    - Scenario name substring matching in generatedChan/MATLAB and generatedChan/OpenNTN
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.abspath(os.path.join(script_dir, '..'))
@@ -310,33 +352,38 @@ def get_data_path(data_root: str, snr: int, is_test_code: bool = False) -> str:
     candidate_roots.extend([
         os.path.join(project_root, 'generatedChan', 'OpenNTN', DATA_FOLDER_NAME),
         os.path.join(project_root, 'generatedChan', 'OpenNTN', 'DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps'),
-        os.path.join(project_root, 'generatedChan', 'MATLAB', 'sampleWiseDoppler_wGeometry_A100_2p18e9_600km_70deg_30kHz')
+        os.path.join(project_root, 'generatedChan', 'MATLAB', 'sampleWiseDoppler_wGeometry_A100_2p18e9_600km_70deg_30kHz'),
+        os.path.join(project_root, 'generatedChan', 'MATLAB', 'A100_2p18e9_600km_70deg_30kHz')
     ])
 
     snr_variations = [
         f"SNR_{snr}dB",
         f"{snr}dB",
         f"SNR_{snr}",
-        f"{snr}"
+        f"{snr}",
+        f"SNR_{snr:02d}dB",
     ]
 
     for root in candidate_roots:
         if not os.path.isdir(root):
             continue
-        # Try each SNR subfolder variation
+        # 1. Try each SNR subfolder variation
         for snr_var in snr_variations:
             snr_dir = os.path.join(root, snr_var)
             if os.path.isdir(snr_dir):
-                mat_file = find_any_mat_file(snr_dir)
+                mat_file = find_channel_mat_file(snr_dir)
                 if mat_file:
                     return mat_file
-        # Direct check inside root if no SNR subfolders
-        mat_file = find_any_mat_file(root)
-        if mat_file:
-            return mat_file
+
+        # 2. Check if the root itself is an SNR directory (e.g. user passed path directly to SNR folder)
+        root_base = os.path.basename(root.rstrip('\\/'))
+        if root_base in snr_variations or root_base.lower() in [v.lower() for v in snr_variations]:
+            mat_file = find_channel_mat_file(root)
+            if mat_file:
+                return mat_file
 
     raise FileNotFoundError(
-        f"Could not find any .mat data files for SNR={snr} in any searched location.\n"
+        f"Could not find any channel .mat data files for SNR={snr} in any searched location.\n"
         f"Searched roots: {candidate_roots}"
     )
 
