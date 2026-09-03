@@ -109,8 +109,9 @@ DEFAULT_SSIM_START  = 0.95         # Initial SSIM weight (MSE weight = 1 - w)
 DEFAULT_SSIM_END    = 0.05         # Final SSIM weight
 DEFAULT_DOMAIN_WEIGHT = 0.5        # CORAL loss penalty (lambda)
 DEFAULT_CORAL_LAYERS = ['block_2', 'block_3']
-DEFAULT_N_BLOCKS    = 6
-DEFAULT_CLIP_EXTRAP = False
+DEFAULT_PROJ_DIM     = 64           # Projected embedding dimension for CORAL alignment
+DEFAULT_N_BLOCKS     = 4
+DEFAULT_CLIP_EXTRAP  = False
 # ============================================================================
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -358,50 +359,87 @@ def preprocess_batch(H_perf: np.ndarray, H_in: np.ndarray, lower_range: int = -1
             y_scaled = (y_real - min_x) / diff
         return tf.convert_to_tensor(x_scaled, dtype=tf.float32), tf.convert_to_tensor(y_scaled, dtype=tf.float32), min_x, max_x
 
+# ============================================================================
+# 3. PROJECTION HEAD NETWORK & PROJECTED CORAL LOSS
+# ============================================================================
 
-# ============================================================================
-# 3. CORAL LOSS WITH SPATIAL GLOBAL AVERAGE POOLING (GAP)
-# ============================================================================
+class ProjectionHead(tf.keras.layers.Layer):
+    """
+    Dedicated Non-Linear Projection Head Network.
+    Applies spatial Global Average Pooling (GAP) to 4D CNN tensors [B, 132, 14, C] -> [B, C],
+    then maps through a 2-layer MLP with LayerNorm and GeLU non-linearity:
+    [B, C] -> Dense(hidden_dim) -> LayerNorm -> GeLU -> Dense(proj_dim) -> [B, proj_dim].
+    """
+    def __init__(self, in_dim: int, hidden_dim: int = 128, proj_dim: int = 64, **kwargs):
+        super().__init__(**kwargs)
+        self.in_dim = in_dim
+        self.hidden_dim = hidden_dim
+        self.proj_dim = proj_dim
+        self.dense1 = tf.keras.layers.Dense(hidden_dim, kernel_initializer='glorot_uniform', name="dense_proj1")
+        self.norm = tf.keras.layers.LayerNormalization(epsilon=1e-5, name="ln_proj")
+        self.act = tf.keras.layers.Activation('gelu', name="act_proj")
+        self.dense2 = tf.keras.layers.Dense(proj_dim, kernel_initializer='glorot_uniform', name="dense_proj2")
+
+    def call(self, x, training=False):
+        # 1. Spatial Global Average Pooling across (132, 14) grid for 4D feature maps
+        if len(x.shape) == 4:
+            x = tf.reduce_mean(x, axis=[1, 2])  # [B, C]
+        elif len(x.shape) > 2:
+            x = tf.reshape(x, [tf.shape(x)[0], -1])
+
+        h = self.dense1(x)
+        h = self.norm(h, training=training)
+        h = self.act(h)
+        p = self.dense2(h)
+        return p
+
+
+def get_block_filters(block_idx: int, n_blocks: int) -> int:
+    """Calculate the filter channels of block_idx in CNNGenerator pyramid."""
+    if block_idx == 0 or block_idx == n_blocks - 1:
+        return 64
+    if block_idx < n_blocks // 2:
+        return min(32 * (4 ** block_idx), 1024)
+    mirror_idx = n_blocks - 1 - block_idx
+    return min(32 * (4 ** mirror_idx), 1024)
+
+
+def build_projection_heads(selected_layers: list, n_blocks: int = 6, custom_proj_dim: int = 64) -> dict:
+    """Instantiate a dedicated non-linear projection head for each selected layer."""
+    heads = {}
+    for lyr in selected_layers:
+        if 'block_' in lyr:
+            try:
+                b_num = int(lyr.split('_')[-1])
+                b_idx = b_num - 1
+                in_dim = get_block_filters(b_idx, n_blocks)
+            except Exception:
+                in_dim = 128
+        else:
+            in_dim = 128
+        hidden_dim = max(in_dim // 2, 128)
+        heads[lyr] = ProjectionHead(in_dim=in_dim, hidden_dim=hidden_dim, proj_dim=custom_proj_dim)
+    return heads
+
 
 @tf.function
-def compute_coral_loss(features_src: list, features_tgt: list) -> tf.Tensor:
+def coral_loss_single_layer(p_s: tf.Tensor, p_t: tf.Tensor) -> tf.Tensor:
     """
-    Computes Multi-Layer CORAL loss between source and target intermediate activations.
-    Applies Global Average Pooling (GAP) across spatial dimensions [1, 2] to 4D CNN 
-    tensors [B, 132, 14, C] -> [B, C] before computing the covariance distance.
+    Computes CORAL loss on projected embeddings P_src and P_tgt.
+    Loss = ||Cov(P_src) - Cov(P_tgt)||_F^2 / (4 * d^2)
     """
-    if not features_src or not features_tgt:
-        return tf.constant(0.0, dtype=tf.float32)
+    n_s = tf.cast(tf.shape(p_s)[0], tf.float32)
+    n_t = tf.cast(tf.shape(p_t)[0], tf.float32)
+    d = tf.cast(tf.shape(p_s)[1], tf.float32)
 
-    total_loss = tf.constant(0.0, dtype=tf.float32)
-    n_layers = tf.cast(len(features_src), tf.float32)
+    p_s_centered = p_s - tf.reduce_mean(p_s, axis=0, keepdims=True)
+    p_t_centered = p_t - tf.reduce_mean(p_t, axis=0, keepdims=True)
 
-    for f_s, f_t in zip(features_src, features_tgt):
-        # 1. Apply Global Average Pooling (GAP) across (132, 14) spatial axes for 4D feature maps
-        if len(f_s.shape) == 4:
-            f_s = tf.reduce_mean(f_s, axis=[1, 2])  # [B, C]
-            f_t = tf.reduce_mean(f_t, axis=[1, 2])  # [B, C]
-        elif len(f_s.shape) > 2:
-            f_s = tf.reshape(f_s, [tf.shape(f_s)[0], -1])
-            f_t = tf.reshape(f_t, [tf.shape(f_t)[0], -1])
+    cov_s = tf.matmul(p_s_centered, p_s_centered, transpose_a=True) / tf.maximum(n_s - 1.0, 1.0)
+    cov_t = tf.matmul(p_t_centered, p_t_centered, transpose_a=True) / tf.maximum(n_t - 1.0, 1.0)
 
-        n_s = tf.cast(tf.shape(f_s)[0], tf.float32)
-        n_t = tf.cast(tf.shape(f_t)[0], tf.float32)
-        d = tf.cast(tf.shape(f_s)[1], tf.float32)
-
-        # 2. Mean-center feature activations across batch
-        f_s_centered = f_s - tf.reduce_mean(f_s, axis=0, keepdims=True)
-        f_t_centered = f_t - tf.reduce_mean(f_t, axis=0, keepdims=True)
-
-        # 3. Second-order sample covariance matrices: Cov = (X^T * X) / (N - 1)
-        cov_s = tf.matmul(f_s_centered, f_s_centered, transpose_a=True) / tf.maximum(n_s - 1.0, 1.0)
-        cov_t = tf.matmul(f_t_centered, f_t_centered, transpose_a=True) / tf.maximum(n_t - 1.0, 1.0)
-
-        # 4. Squared Frobenius norm distance
-        layer_coral = tf.reduce_sum(tf.square(cov_s - cov_t)) / (4.0 * d * d)
-        total_loss += layer_coral
-
-    return total_loss / n_layers
+    cov_diff_sq = tf.reduce_sum(tf.square(cov_s - cov_t))
+    return cov_diff_sq / (4.0 * d * d + 1e-12)
 
 
 # ============================================================================
@@ -431,13 +469,14 @@ def infer_channel(model: CNNGenerator, H_perf: np.ndarray, H_in: np.ndarray,
     return np.concatenate(out, axis=0) if len(out) > 0 else np.empty((0, 132, 14), dtype=np.complex64)
 
 
-def extract_features(model: CNNGenerator, H_perf: np.ndarray, H_in: np.ndarray,
-                     batch_size: int, selected_layers: list, lower_range: int = -1,
-                     clip_extrap: bool = False, pilot_bounds: tuple = None,
-                     standardize: bool = False) -> dict:
-    """Extract intermediate features with spatial GAP applied."""
+def extract_features_and_projections(model: CNNGenerator, proj_heads: dict, H_perf: np.ndarray, H_in: np.ndarray,
+                                     batch_size: int, selected_layers: list, lower_range: int = -1,
+                                     clip_extrap: bool = False, pilot_bounds: tuple = None,
+                                     standardize: bool = False) -> tuple:
+    """Extract intermediate features: raw (GAP-pooled [B, C]) and non-linear projected embeddings [B, d_proj]."""
     N = H_in.shape[0]
-    feats_dict = {lyr: [] for lyr in selected_layers}
+    raw_dict = {lyr: [] for lyr in selected_layers}
+    proj_dict = {lyr: [] for lyr in selected_layers}
     for start in range(0, N, batch_size):
         end = min(start + batch_size, N)
         x_sc, _, _, _ = preprocess_batch(H_perf[start:end], H_in[start:end], lower_range,
@@ -449,9 +488,14 @@ def extract_features(model: CNNGenerator, H_perf: np.ndarray, H_in: np.ndarray,
                 f_pool = tf.reduce_mean(f_t, axis=[1, 2])
             else:
                 f_pool = tf.reshape(f_t, [tf.shape(f_t)[0], -1])
-            feats_dict[lyr_name].append(f_pool.numpy())
+            p_t = proj_heads[lyr_name](f_t, training=False)
+            raw_dict[lyr_name].append(f_pool.numpy())
+            proj_dict[lyr_name].append(p_t.numpy())
 
-    return {k: np.concatenate(v, axis=0) if len(v) > 0 else np.empty((0,)) for k, v in feats_dict.items()}
+    return (
+        {k: np.concatenate(v, axis=0) if len(v) > 0 else np.empty((0,)) for k, v in raw_dict.items()},
+        {k: np.concatenate(v, axis=0) if len(v) > 0 else np.empty((0,)) for k, v in proj_dict.items()}
+    )
 
 
 def save_test_channel_mat(filepath: str, H_perf: np.ndarray, H_perf_ori: np.ndarray,
@@ -683,6 +727,7 @@ def main():
     parser.add_argument('--lr', type=float, default=DEFAULT_LR, help='Learning rate')
     parser.add_argument('--domain-weight', type=float, default=DEFAULT_DOMAIN_WEIGHT, help='CORAL loss weight (lambda)')
     parser.add_argument('--coral-layers', nargs='+', default=DEFAULT_CORAL_LAYERS, help='DnCNN intermediate blocks to align with CORAL')
+    parser.add_argument('--proj-dim', type=int, default=DEFAULT_PROJ_DIM, help='Projected subspace embedding dimension')
     parser.add_argument('--only-source', action='store_true', help='Train on source domain only (no CORAL adaptation)')
     parser.add_argument('--save-features', action='store_true', help='Save intermediate activations at begin, mid, and last epochs')
     parser.add_argument('--train-frac', type=float, default=DEFAULT_TRAIN_FRAC, help='Train split fraction')
@@ -720,9 +765,10 @@ def main():
     tgt_mat_path = get_mat_file(args.target_dir, args.snr)
 
     print("=" * 80)
-    print(f"DnCNN (CNNGenerator) | Mode: {'Source-Only' if args.only_source else 'Multi-Layer CORAL UDA'}")
+    print(f"DnCNN (CNNGenerator) | Mode: {'Source-Only' if args.only_source else 'Projection-Head CORAL UDA'}")
     if not args.only_source:
-        print(f"CORAL Extracted Layers: {selected_layers} (with Spatial Global Average Pooling)")
+        print(f"CORAL Extracted Layers: {selected_layers} (with Dedicated Projection Heads)")
+        print(f"Projection Subspace Dimension: {args.proj_dim}")
         print(f"CORAL Loss Weight (lambda): {domain_weight}")
     print(f"Source Dataset: {src_mat_path}")
     print(f"Target Dataset: {tgt_mat_path}")
@@ -766,8 +812,21 @@ def main():
 
     # Instantiate DnCNN Model with extraction layers
     model = CNNGenerator(n_blocks=args.n_blocks, extract_layers=selected_layers)
+    
+    # Instantiate Dedicated Projection Heads
+    proj_heads = build_projection_heads(selected_layers, n_blocks=args.n_blocks, custom_proj_dim=args.proj_dim)
+    print(f"\n[Model Initialized] DnCNN ({args.n_blocks} Blocks) + {len(proj_heads)} Dedicated Projection Head(s):")
+    for lyr, head in proj_heads.items():
+        print(f"  --> {lyr.upper()} Projection Head: [{head.in_dim} -> {head.hidden_dim} -> {head.proj_dim}]")
+
     optimizer = tf.keras.optimizers.Adam(learning_rate=args.lr, beta_1=0.5, beta_2=0.9)
     loss_fn = tf.keras.losses.MeanSquaredError()
+
+    # Pre-build model & projection head variables with dummy forward pass
+    dummy_x = tf.zeros((args.batch_size, 132, 14, 2), dtype=tf.float32)
+    _, dummy_feats = model(dummy_x, training=False, return_features=True)
+    for lyr, f_t in zip(selected_layers, dummy_feats):
+        proj_heads[lyr](f_t, training=False)
 
     # Comprehensive metric tracking across epochs
     history = {
@@ -796,19 +855,19 @@ def main():
     feature_checkpoint_epochs = {0: 'begin', mid_epoch: 'mid', args.epochs - 1: 'last'}
 
     # =========================================================================
-    # COMPILED GPU TRAINING STEP
+    # COMPILED GPU TRAINING STEPS
     # =========================================================================
     @tf.function
-    def _train_step(x_src, y_src, x_tgt, ssim_w, domain_w, standardize):
+    def _train_step_coral_phead(x_src, y_src, x_tgt, ssim_w, domain_w, standardize):
         with tf.GradientTape() as tape:
-            # Source forward pass
+            # 1. Source forward pass
             res_src, feats_src = model(x_src, training=True, return_features=True)
             x_pred_src = x_src + res_src
 
-            # Target forward pass
+            # 2. Target forward pass
             _, feats_tgt = model(x_tgt, training=True, return_features=True)
 
-            # MSE and SSIM Estimation Loss on source
+            # 3. MSE and SSIM Estimation Loss on source
             mse_val = loss_fn(y_src, x_pred_src)
             if standardize:
                 max_val = tf.maximum(tf.reduce_max(y_src) - tf.reduce_min(y_src), 1e-8)
@@ -820,15 +879,50 @@ def main():
             est_loss = (1.0 - ssim_w) * mse_val + ssim_w * ssim_loss
             reg_loss = 0.001 * tf.reduce_mean(tf.square(res_src))
 
-            # Multi-Layer CORAL Loss with Spatial GAP
-            coral_loss = compute_coral_loss(feats_src, feats_tgt) if domain_w > 0 else tf.constant(0.0, dtype=tf.float32)
+            # 4. Multi-Head Projected CORAL Loss
+            coral_losses = []
+            for lyr, z_s, z_t in zip(selected_layers, feats_src, feats_tgt):
+                phead = proj_heads[lyr]
+                p_s = phead(z_s, training=True)
+                p_t = phead(z_t, training=True)
+                l_c = coral_loss_single_layer(p_s, p_t)
+                coral_losses.append(l_c)
+
+            coral_loss = tf.add_n(coral_losses) / tf.cast(len(coral_losses), tf.float32) if coral_losses else tf.constant(0.0)
             total_loss = est_loss + reg_loss + domain_w * coral_loss
+
+        # Collect trainable variables from BOTH main model AND active projection heads
+        trainable_vars = list(model.trainable_variables)
+        for lyr in selected_layers:
+            trainable_vars.extend(proj_heads[lyr].trainable_variables)
+
+        grads = tape.gradient(total_loss, trainable_vars)
+        optimizer.apply_gradients(zip(grads, trainable_vars))
+        return total_loss, est_loss, coral_loss
+
+    @tf.function
+    def _train_step_source_only(x_src, y_src, ssim_w, standardize):
+        with tf.GradientTape() as tape:
+            res_src = model(x_src, training=True)
+            x_pred_src = x_src + res_src
+
+            mse_val = loss_fn(y_src, x_pred_src)
+            if standardize:
+                max_val = tf.maximum(tf.reduce_max(y_src) - tf.reduce_min(y_src), 1e-8)
+            else:
+                max_val = tf.cast(2.0 if DEFAULT_LOWER_RANGE == -1 else 1.0, tf.float32)
+            ssim_val = tf.image.ssim(y_src, x_pred_src, max_val=max_val)
+            ssim_loss = tf.reduce_mean(1.0 - ssim_val)
+
+            est_loss = (1.0 - ssim_w) * mse_val + ssim_w * ssim_loss
+            reg_loss = 0.001 * tf.reduce_mean(tf.square(res_src))
+            total_loss = est_loss + reg_loss
 
         grads = tape.gradient(total_loss, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
-        return total_loss, est_loss, coral_loss
+        return total_loss, est_loss, tf.constant(0.0, dtype=tf.float32)
 
-    print(f"\n[Train] Starting GPU-Accelerated DnCNN CORAL Training for {args.epochs} Epochs ...")
+    print(f"\n[Train] Starting GPU-Accelerated DnCNN Projection-Head CORAL Training for {args.epochs} Epochs ...")
     t_start = time.perf_counter()
     n_batches = min(len(idx_train_src), len(idx_train_tgt)) // args.batch_size
     standardize_tf = tf.constant(args.standardize, dtype=tf.bool)
@@ -843,15 +937,19 @@ def main():
         # Feature checkpointing at begin, mid, last
         if args.save_features and epoch in feature_checkpoint_epochs:
             stage = feature_checkpoint_epochs[epoch]
-            src_f = extract_features(model, H_perf_src[idx_train_src], H_in_src[idx_train_src], args.batch_size,
-                                     selected_layers, DEFAULT_LOWER_RANGE, args.clip_extrap, pilot_bounds_src, args.standardize)
-            tgt_f = extract_features(model, H_perf_tgt[idx_train_tgt], H_in_tgt[idx_train_tgt], args.batch_size,
-                                     selected_layers, DEFAULT_LOWER_RANGE, args.clip_extrap, pilot_bounds_tgt, args.standardize)
-            for k, v in src_f.items():
-                saved_features[f"features_{stage}_{k}_src"] = v
-            for k, v in tgt_f.items():
-                saved_features[f"features_{stage}_{k}_tgt"] = v
-            print(f"  [Features Saved] Captured intermediate activations at {stage} epoch ({epoch+1}) for layers: {selected_layers}")
+            src_raw, src_proj = extract_features_and_projections(model, proj_heads, H_perf_src[idx_train_src], H_in_src[idx_train_src], args.batch_size,
+                                                                 selected_layers, DEFAULT_LOWER_RANGE, args.clip_extrap, pilot_bounds_src, args.standardize)
+            tgt_raw, tgt_proj = extract_features_and_projections(model, proj_heads, H_perf_tgt[idx_train_tgt], H_in_tgt[idx_train_tgt], args.batch_size,
+                                                                 selected_layers, DEFAULT_LOWER_RANGE, args.clip_extrap, pilot_bounds_tgt, args.standardize)
+            for k, v in src_raw.items():
+                saved_features[f"features_{stage}_{k}_raw_src"] = v
+            for k, v in src_proj.items():
+                saved_features[f"features_{stage}_{k}_proj_src"] = v
+            for k, v in tgt_raw.items():
+                saved_features[f"features_{stage}_{k}_raw_tgt"] = v
+            for k, v in tgt_proj.items():
+                saved_features[f"features_{stage}_{k}_proj_tgt"] = v
+            print(f"  [Features Saved] Captured intermediate (raw) & projected activations at {stage} epoch ({epoch+1}) for layers: {selected_layers}")
 
         # Linear decaying SSIM weight schedule
         if args.epochs > 1:
@@ -876,7 +974,11 @@ def main():
             x_t, _, _, _ = preprocess_batch(train_perf_tgt[sl], train_in_tgt[sl], DEFAULT_LOWER_RANGE,
                                             args.clip_extrap, pilot_bounds_tgt, args.standardize)
 
-            tot_l, est_l, cor_l = _train_step(x_s, y_s, x_t, ssim_w_tf, domain_w_tf, standardize_tf)
+            if args.only_source:
+                tot_l, est_l, cor_l = _train_step_source_only(x_s, y_s, ssim_w_tf, standardize_tf)
+            else:
+                tot_l, est_l, cor_l = _train_step_coral_phead(x_s, y_s, x_t, ssim_w_tf, domain_w_tf, standardize_tf)
+
             ep_total_l += tot_l.numpy()
             ep_est_l += est_l.numpy()
             ep_coral_l += cor_l.numpy()
@@ -933,7 +1035,7 @@ def main():
             history['ssim_val_tgt'].append(ssim_t_val)
 
             print(f"Epoch {epoch+1:03d}/{args.epochs:03d} | Total Loss: {ep_total_l/n_batches:.4f} "
-                  f"(Est: {ep_est_l/n_batches:.4f}, CORAL: {ep_coral_l/n_batches:.4f}) | "
+                  f"(Est: {ep_est_l/n_batches:.4f}, Proj-CORAL: {ep_coral_l/n_batches:.4f}) | "
                   f"Target NMSE: {nmse_t_val:.2f} dB (Src: {nmse_s_val:.2f} dB) | Target SSIM: {ssim_t_val:.4f}")
 
     total_time = time.perf_counter() - t_start
@@ -969,11 +1071,11 @@ def main():
     # 1. Save Exported Test MAT Files (for MATLAB benchmarking)
     save_test_channel_mat(os.path.join(output_dir, 'testChannel_source.mat'), H_perf_src[idx_test_src],
                           H_perf_ori_src[idx_test_src], H_in_src[idx_test_src], test_pred_src, src_dict,
-                          idx_test_src, args.snr, f"DnCNN_{args.input_type.upper()}")
+                          idx_test_src, args.snr, f"DnCNN_pHead_{args.input_type.upper()}")
 
     save_test_channel_mat(os.path.join(output_dir, 'testChannel_target.mat'), H_perf_tgt[idx_test_tgt],
                           H_perf_ori_tgt[idx_test_tgt], H_in_tgt[idx_test_tgt], test_pred_tgt, tgt_dict,
-                          idx_test_tgt, args.snr, f"DnCNN_{args.input_type.upper()}")
+                          idx_test_tgt, args.snr, f"DnCNN_pHead_{args.input_type.upper()}")
 
     # 2. Save Plotted Channel Samples to sample_reconstructions.mat
     samples_dict = {
@@ -996,7 +1098,8 @@ def main():
         'pilot_rows': src_dict['pilot_rows'] + 1,
         'pilot_cols': src_dict['pilot_cols'] + 1,
         'snr': args.snr,
-        'input_type': args.input_type
+        'input_type': args.input_type,
+        'model_type': 'DnCNN_pHead'
     }
     savemat(os.path.join(output_dir, 'sample_reconstructions.mat'), samples_dict)
     print(f"[Save] Exported sample reconstruction grids MAT file -> {os.path.join(output_dir, 'sample_reconstructions.mat')}")
@@ -1006,7 +1109,8 @@ def main():
         'nmse_test_src_db': nmse_src_db, 'mmse_test_src': mmse_src, 'ssim_test_src': ssim_src,
         'nmse_test_tgt_db': nmse_tgt_db, 'mmse_test_tgt': mmse_tgt, 'ssim_test_tgt': ssim_tgt,
         'nmse_test_db': nmse_tgt_db, 'mmse_test': mmse_tgt, 'ssim_test': ssim_tgt,
-        'snr': args.snr, 'input_type': args.input_type, 'coral_layers': np.array(selected_layers)
+        'snr': args.snr, 'input_type': args.input_type, 'proj_dim': args.proj_dim,
+        'coral_layers': np.array(selected_layers)
     }
     savemat(os.path.join(output_dir, 'evaluation_results.mat'), eval_dict)
 
@@ -1017,8 +1121,10 @@ def main():
     # 5. Save Extracted Features MAT if requested
     if args.save_features and saved_features:
         saved_features['selected_layers'] = np.array(selected_layers)
+        saved_features['train_indices_src'] = idx_train_src
+        saved_features['train_indices_tgt'] = idx_train_tgt
         savemat(os.path.join(output_dir, 'extracted_features.mat'), saved_features, do_compression=True)
-        print(f"[Save] Exported extracted features -> {os.path.join(output_dir, 'extracted_features.mat')}")
+        print(f"[Save] Exported extracted raw and projected features -> {os.path.join(output_dir, 'extracted_features.mat')}")
 
     # 6. Render All PDF Visualizations
     try:
@@ -1049,7 +1155,7 @@ def main():
     except Exception as e:
         print(f"[Plot Warning] Failed to render some PDF plots: {e}")
 
-    print(f"\n[Done] CORAL DnCNN execution completed successfully. Output saved to -> {output_dir}")
+    print(f"\n[Done] Projection-Head CORAL DnCNN execution completed successfully. Output saved to -> {output_dir}")
 
 
 if __name__ == '__main__':

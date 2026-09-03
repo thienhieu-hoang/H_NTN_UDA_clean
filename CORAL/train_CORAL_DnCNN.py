@@ -109,7 +109,7 @@ DEFAULT_SSIM_START  = 0.95         # Initial SSIM weight (MSE weight = 1 - w)
 DEFAULT_SSIM_END    = 0.05         # Final SSIM weight
 DEFAULT_DOMAIN_WEIGHT = 0.5        # CORAL loss penalty (lambda)
 DEFAULT_CORAL_LAYERS = ['block_2', 'block_3']
-DEFAULT_N_BLOCKS    = 6
+DEFAULT_N_BLOCKS    = 4
 DEFAULT_CLIP_EXTRAP = False
 # ============================================================================
 

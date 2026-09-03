@@ -24,20 +24,36 @@ $trainedDataset = "A100_2p18e9_600km_70deg_30kHz"
 
 # 2. List the model subfolders to evaluate
 $models = @(
-    # "LI_cGAN",
-    # "LI_cGAN_standardize",
-    "LI_DnCNN_standardize"
-    # "LI_DnCNN_AxialAttention",
-    # "LI_DnCNN_CrossAttention"
+    "LI_cGAN",
+    "LI_cGAN_standardize",
+    "LI_DnCNN",
+    "LI_DnCNN_standardize",
+    "LI_DnCNN_Attention",
+    "LI_DnCNN_Attention_standardize",
+    "LI_DnCNN_AxialAttention",
+    "LI_DnCNN_AxialAttention_standardize",
+    "LI_DnCNN_CrossAttention",
+    "LI_DnCNN_CrossAttention_standardize",
+    "LS_Attention",
+    "LS_Attention_standardize",
+    "LS_DnCNN_Attention"
 )
 
 # Corresponding labels/legend names for evaluation
 $labels = @(
-    # "LI+cGAN",
-    # "LI+cGAN",
-    "LI+DnCNN"
-    # "LI+DnCNN+AxialTransformer",
-    # "LI+DnCNN+CrossTransformer"
+    "LI+cGAN",
+    "LI+cGAN",
+    "LI+DnCNN",
+    "LI+DnCNN",
+    "LI+DnCNN+Attention",
+    "LI+DnCNN+Attention",
+    "LI+DnCNN+AxialAttention",
+    "LI+DnCNN+AxialAttention",
+    "LI+DnCNN+CrossAttention",
+    "LI+DnCNN+CrossAttention",
+    "LS+Attention",
+    "LS+Attention",
+    "LS+DnCNN+Attention"
 )
 
 # Verify list lengths match

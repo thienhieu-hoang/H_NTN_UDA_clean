@@ -1,15 +1,20 @@
 # Domain Adaptation Workflow for DnCNN Model (OpenNTN)
 
-This document describes the **Unsupervised Domain Adaptation (UDA)** workflow and architectural principles for the **DnCNN (CNNGenerator)** deep learning model applied to 5G Non-Terrestrial Network (NTN) channel estimation, as implemented in [`train_CORAL_DnCNN.py`](file:///c:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/CORAL/train_CORAL_DnCNN.py).
+This document describes the **Unsupervised Domain Adaptation (UDA)** workflow, architectural principles, and mathematical formulations for the **DnCNN (CNNGenerator)** deep learning models applied to 5G Non-Terrestrial Network (NTN) channel estimation, covering:
+1. **Direct Multi-Layer CORAL Alignment**: [`train_CORAL_DnCNN.py`](file:///c:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/CORAL/train_CORAL_DnCNN.py)
+2. **Projection-Head CORAL Alignment**: [`train_CORALpHead_DnCNN.py`](file:///c:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/CORAL/train_CORALpHead_DnCNN.py)
 
 ---
 
 ## 1. DnCNN (CNNGenerator) Architecture Overview
 
-The DnCNN model takes a 2D time-frequency channel grid (e.g. Linear Interpolation $\mathbf{H}_{\text{LI}}$, Practical Interpolation $\mathbf{H}_{\text{Prac}}$, or Least Squares $\mathbf{H}_{\text{LS}}$) and denoises/reconstructs the full perfect channel grid:
+The DnCNN backbone takes a 2D time-frequency channel grid (e.g. Linear Interpolation $\mathbf{H}_{\text{LI}}$, Practical Interpolation $\mathbf{H}_{\text{Prac}}$, or Least Squares $\mathbf{H}_{\text{LS}}$) and denoises/reconstructs the full perfect complex channel grid:
 
 $$\mathbf{H}_{\text{in}} \in \mathbb{R}^{132 \times 14 \times 2} \xrightarrow{\quad \text{DnCNN} \quad} \hat{\mathbf{H}}_{\text{out}} \in \mathbb{R}^{132 \times 14 \times 2}$$
 
+### 4-SameShapeBlock Architecture with Projection-Head CORAL
+
+The diagram below illustrates the default **4-SameShapeBlock** network topology (`N_BLOCKS = 4`, configurable to 6 blocks via `--n-blocks 6`) coupled with multi-layer feature extraction and projection-head alignment:
 ```
 [Input Channel Grid: 132x14x2 (Real, Imag)]
        │
@@ -24,28 +29,16 @@ $$\mathbf{H}_{\text{in}} \in \mathbb{R}^{132 \times 14 \times 2} \xrightarrow{\q
 │ Block 2: SameShapeBlock (Conv2D -> INorm -> LReLU)     │ ──► [B, 132, 14, 128]
 └────────────────────────────────────────────────────────┘
        │
-       ├──► 🌟 [block_2]: Spatial Feature Map [B, 132, 14, 128]  (DEFAULT CORAL POINT)
+       ├──► 🌟 [block_2]: Spatial Feature Map [B, 132, 14, 128]  (PRIMARY CORAL POINT)
        ▼
 ┌────────────────────────────────────────────────────────┐
-│ Block 3: SameShapeBlock (Conv2D -> INorm -> LReLU)     │ ──► [B, 132, 14, 512]
+│ Block 3: SameShapeBlock (Conv2D -> INorm -> LReLU)     │ ──► [B, 132, 14, 128]
 └────────────────────────────────────────────────────────┘
        │
-       ├──► 🌟 [block_3]: Spatial Feature Map [B, 132, 14, 512]  (DEFAULT CORAL POINT)
+       ├──► 🌟 [block_3]: Spatial Feature Map [B, 132, 14, 128]  (SECONDARY CORAL POINT)
        ▼
 ┌────────────────────────────────────────────────────────┐
-│ Block 4: SameShapeBlock (Conv2D -> INorm -> LReLU)     │ ──► [B, 132, 14, 512]
-└────────────────────────────────────────────────────────┘
-       │
-       ├──► 🌟 [block_4]: Spatial Feature Map [B, 132, 14, 512]
-       ▼
-┌────────────────────────────────────────────────────────┐
-│ Block 5: SameShapeBlock (Conv2D -> INorm -> LReLU)     │ ──► [B, 132, 14, 128]
-└────────────────────────────────────────────────────────┘
-       │
-       ├──► 🌟 [block_5]: Spatial Feature Map [B, 132, 14, 128]
-       ▼
-┌────────────────────────────────────────────────────────┐
-│ Block 6: SameShapeBlock (Conv2D -> INorm -> LReLU)     │ ──► [B, 132, 14, 64]
+│ Block 4: SameShapeBlock (Conv2D -> INorm -> LReLU)     │ ──► [B, 132, 14, 64]
 └────────────────────────────────────────────────────────┘
        │
        ▼
@@ -70,17 +63,27 @@ $$\text{filters}(i) = \begin{cases}
 \end{cases}$$
 
 ### Filter Counts for Standard Configurations:
-* **$N_{\text{blocks}} = 4$**: $[64, 128, 128, 64]$
-* **$N_{\text{blocks}} = 6$ (Default)**: $[64, 128, 512, 512, 128, 64]$
+* **$N_{\text{blocks}} = 4$**:
+  * Block 1: $64$ channels
+  * Block 2: $128$ channels
+  * Block 3: $128$ channels
+  * Block 4: $64$ channels
+* **$N_{\text{blocks}} = 6$**:
+  * Block 1: $64$ channels
+  * Block 2: $128$ channels
+  * Block 3: $512$ channels
+  * Block 4: $512$ channels
+  * Block 5: $128$ channels
+  * Block 6: $64$ channels
 
 ---
 
-## 3. Spatial Feature Pooling for CORAL Alignment
+## 3. Spatial Feature Pooling for 4D CNN Representations
 
-### The High-Dimensionality Challenge in 4D CNNs:
-Each block output is a 4D tensor $\mathbf{Z} \in \mathbb{R}^{B \times 132 \times 14 \times C_k}$.
+### The High-Dimensionality Challenge:
+Each SameShapeBlock produces a 4D tensor $\mathbf{Z} \in \mathbb{R}^{B \times 132 \times 14 \times C_k}$.
 * Direct spatial flattening produces vectors of dimension $D = 132 \times 14 \times C_k = 1848 \times C_k$.
-* For $C_k = 128$, $D = 236,544$. A $236,544 \times 236,544$ covariance matrix would require over **220 GB of VRAM**, crashing the GPU.
+* For $C_k = 128$, $D = 236,544$. Computing a sample covariance matrix of size $236,544 \times 236,544$ would require over **220 GB of VRAM**, crashing the GPU.
 
 ### Spatial Global Average Pooling (GAP) Solution:
 To perform second-order domain alignment efficiently and robustly, spatial Global Average Pooling is applied across the time-frequency subcarrier and OFDM symbol dimensions:
@@ -89,54 +92,93 @@ $$\bar{\mathbf{z}}_{b, c} = \frac{1}{H \times W} \sum_{h=1}^{H=132} \sum_{w=1}^{
 
 ```
 ====================================================================================================
-SPATIAL GLOBAL AVERAGE POOLING (GAP) CORAL ALIGNMENT
+SPATIAL GLOBAL AVERAGE POOLING (GAP)
 ====================================================================================================
    Z_block [B, 132, 14, C_k] ──► Spatial GAP (Mean over 132x14) ──► Z_pooled [B, C_k]
-                                                                          │
-                                                                          ▼
-                                                               Covariance Matrix [C_k x C_k]
-                                                                          │
-                                                                          ▼
-                                                               CORAL Loss: ||Cov_src - Cov_tgt||_F^2
 ====================================================================================================
 ```
 
-### Advantages of Spatial GAP in CORAL:
-1. **Physical Channel Invariance**: In 5G NTN, Doppler shifts and delay spreads introduce shifts along time and frequency axes. Global spatial pooling captures the **energy and correlation profile across feature channels** while remaining invariant to absolute spatial translation.
+### Physical & Domain Adaptation Rationale:
+1. **Time-Frequency Translation Invariance**: In 5G NTN channels, Doppler frequency shifts and propagation delays cause phase rotations and grid translations. Global spatial pooling captures the **energy and cross-channel correlation profile** while remaining invariant to spatial shifts.
 2. **Compact & Well-Conditioned Covariance**:
-   * For `block_2` ($C_k = 128$): Covariance matrix is $[128 \times 128]$.
-   * For `block_3` ($C_k = 512$): Covariance matrix is $[512 \times 512]$.
-3. **High Throughput & Low Memory**: Enables fast training on standard GPUs (e.g. RTX 3080/4090) with compiled `@tf.function` execution.
+   * For $C_k = 128$: Covariance matrix is $[128 \times 128]$ (only 16,384 elements).
+   * For $C_k = 512$: Covariance matrix is $[512 \times 512]$ (262,144 elements).
+3. **High GPU Training Speed**: Enables fast training on standard GPUs with `@tf.function` compiled graph execution.
 
 ---
 
-## 4. Multi-Layer Extraction Points
+## 4. Method 1: Direct CORAL Alignment (`train_CORAL_DnCNN.py`)
 
-| Layer Key | Extraction Block | Spatial Tensor Shape | Pooled Vector Shape | Physical & Domain Interpretation |
-| :--- | :--- | :---: | :---: | :--- |
-| **`block_1`** | Block 1 Output | `[B, 132, 14, 64]` | `[B, 64]` | Low-level time-frequency edge & pilot boundary features. |
-| **`block_2`** | Block 2 Output | `[B, 132, 14, 128]` | `[B, 128]` | **Default Primary Point.** Captures local subcarrier delay-correlation patterns across neighboring subcarriers. |
-| **`block_3`** | Block 3 Output | `[B, 132, 14, 512]` | `[B, 512]` | **Default Secondary Point.** Deep latent representations capturing rich non-linear Doppler-delay couplings. |
-| **`block_4`** | Block 4 Output | `[B, 132, 14, 512]` | `[B, 512]` | Symmetric decoding block prior to channel resolution refinement. |
-| **`block_5`** | Block 5 Output | `[B, 132, 14, 128]` | `[B, 128]` | Multi-scale channel feature reconstruction. |
-| **`block_6`** | Block 6 Output | `[B, 132, 14, 64]` | `[B, 64]` | Final refinement stage before channel grid synthesis. |
+In [`train_CORAL_DnCNN.py`](file:///c:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/CORAL/train_CORAL_DnCNN.py), the domain covariance alignment is applied directly to the pooled feature vectors $\bar{\mathbf{Z}}^{(k)}$:
+
+```
+[Source Batch] ──► DnCNN ──► Z_src [B, 132, 14, C_k] ──► Spatial GAP ──► Z_pool_src [B, C_k] ──┐
+                                                                                               ├──► CORAL Loss
+[Target Batch] ──► DnCNN ──► Z_tgt [B, 132, 14, C_k] ──► Spatial GAP ──► Z_pool_tgt [B, C_k] ──┘
+```
+
+$$\mathcal{L}_{\text{CORAL}} = \frac{1}{|\mathcal{K}|} \sum_{k \in \mathcal{K}} \frac{1}{4 C_k^2} \|\mathbf{C}(\bar{\mathbf{Z}}_{\text{src}}^{(k)}) - \mathbf{C}(\bar{\mathbf{Z}}_{\text{tgt}}^{(k)})\|_F^2$$
 
 ---
 
-## 5. Mathematical Formulation & Dynamic Loss Annealing
+## 5. Method 2: Dedicated Projection-Head Network (`train_CORALpHead_DnCNN.py`)
 
-### 1. Spatial Covariance Matrix
-For a globally pooled batch $\mathbf{Z} \in \mathbb{R}^{B \times C_k}$ with batch mean $\bar{\mathbf{z}} = \frac{1}{B} \sum_{i=1}^B \mathbf{z}_i$:
+In [`train_CORALpHead_DnCNN.py`](file:///c:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/CORAL/train_CORALpHead_DnCNN.py), each selected intermediate block is connected to a **Dedicated Non-Linear Projection Head**:
 
-$$\mathbf{C}(\mathbf{Z}) = \frac{1}{B - 1} (\mathbf{Z} - \mathbf{1}\bar{\mathbf{z}}^T)^T (\mathbf{Z} - \mathbf{1}\bar{\mathbf{z}}^T) \in \mathbb{R}^{C_k \times C_k}$$
+```
+[Intermediate Block Feature: [B, 132, 14, C_k]]
+               │
+               ▼  (Spatial Global Average Pooling)
+        [B, C_k]  (Raw Feature Z)
+               │
+               ▼
+┌────────────────────────────────────────────────────────┐
+│ Projection Head Network (Trained Jointly during UDA)   │
+│ 1. Dense(hidden_dim = max(C_k/2, 128))                │
+│ 2. LayerNormalization(eps=1e-5)                        │
+│ 3. GeLU Non-Linear Activation                          │
+│ 4. Dense(proj_dim = 64)                                │
+└────────────────────────────────────────────────────────┘
+               │
+               ▼
+     [B, d_proj = 64] (Projected Feature Embedding P)
+               │
+               ▼
+   [Projected CORAL Covariance Alignment]
+```
 
-### 2. Multi-Layer CORAL Loss
-For a set of selected layers $\mathcal{K}$ (e.g., `['block_2', 'block_3']`):
+### Projection Head Layer Configurations:
 
-$$\mathcal{L}_{\text{CORAL}} = \frac{1}{|\mathcal{K}|} \sum_{k \in \mathcal{K}} \frac{1}{4 C_k^2} \|\mathbf{C}(\mathbf{Z}_{\text{src}}^{(k)}) - \mathbf{C}(\mathbf{Z}_{\text{tgt}}^{(k)})\|_F^2$$
+| Extraction Layer | $N_{\text{blocks}}=4$ Channels ($C_k$) | $N_{\text{blocks}}=6$ Channels ($C_k$) | Projection Head MLP Architecture | Output Embedding Dim ($d_{\text{proj}}$) |
+| :--- | :---: | :---: | :--- | :---: |
+| **`block_1`** | $64$ | $64$ | $[64 \to 128 \to 64]$ | $64$ |
+| **`block_2`** | $128$ | $128$ | $[128 \to 128 \to 64]$ | $64$ |
+| **`block_3`** | $128$ | $512$ | $[128 \to 128 \to 64]$ (4b) / $[512 \to 256 \to 64]$ (6b) | $64$ |
+| **`block_4`** | $64$ | $512$ | $[64 \to 128 \to 64]$ (4b) / $[512 \to 256 \to 64]$ (6b) | $64$ |
+
+### Advantages of Non-Linear Projection Heads:
+1. **Dimension Uniformity**: Projects disparate feature channel widths ($C_2=128, C_3=512$) into equal-sized $d_{\text{proj}}=64$ latent subspaces for balanced multi-layer domain alignment.
+2. **Non-Linear Manifold Alignment**: LayerNorm + GeLU non-linear projection aligns higher-order structural manifold properties beyond simple linear statistics.
+3. **Decoupled Task & Domain Representations**: Allows the DnCNN backbone to retain channel estimation reconstruction fidelity while the projection head learns domain-invariant subspaces.
+4. **Zero Inference Overhead**: The projection heads are used only during backpropagation for domain adaptation loss calculation and are discarded during inference.
+5. **Dual Feature Checkpointing**: `extracted_features.mat` captures both `raw` (pre-projection $[B, C_k]$) and `proj` (post-projection $[B, 64]$) features across `begin`, `mid`, and `last` epochs.
+
+---
+
+## 6. Mathematical Formulation & Dynamic Loss Annealing
+
+### 1. Spatial Sample Covariance Matrix
+For a batch $\mathbf{X} \in \mathbb{R}^{B \times d}$ (where $\mathbf{X} = \bar{\mathbf{Z}}$ for direct CORAL, or $\mathbf{X} = \mathbf{P}$ for projection-head CORAL) with batch mean $\bar{\mathbf{x}} = \frac{1}{B} \sum_{i=1}^B \mathbf{x}_i$:
+
+$$\mathbf{C}(\mathbf{X}) = \frac{1}{B - 1} (\mathbf{X} - \mathbf{1}\bar{\mathbf{x}}^T)^T (\mathbf{X} - \mathbf{1}\bar{\mathbf{x}}^T) \in \mathbb{R}^{d \times d}$$
+
+### 2. Multi-Head Projected CORAL Loss
+For selected layers $\mathcal{K} = \{\text{block\_2}, \text{block\_3}\}$:
+
+$$\mathcal{L}_{\text{CORAL}} = \frac{1}{|\mathcal{K}|} \sum_{k \in \mathcal{K}} \frac{1}{4 d_{\text{proj}}^2} \|\mathbf{C}(\mathbf{P}_{\text{src}}^{(k)}) - \mathbf{C}(\mathbf{P}_{\text{tgt}}^{(k)})\|_F^2$$
 
 ### 3. Dynamic SSIM-to-MSE Weight Annealing
-During the initial epochs, structural similarity (SSIM) guides the network to capture global channel envelope geometry. In later epochs, MSE focuses on precise complex-valued phase and amplitude fitting:
+During early epochs, structural similarity (SSIM) guides the network to capture global channel envelope geometry. In later epochs, MSE focuses on precise complex-valued phase and amplitude fitting:
 
 $$\alpha(e) = \alpha_{\text{start}} - \frac{e}{E - 1} (\alpha_{\text{start}} - \alpha_{\text{end}}), \quad e \in \{0, 1, \dots, E-1\}$$
 
@@ -146,24 +188,43 @@ $$\mathcal{L}_{\text{est}}(Y_{\text{src}}, \hat{X}_{\text{src}}) = (1 - \alpha(e
 
 ### 4. Joint Total Optimization Objective
 
-$$\min_{\Theta_{\text{DnCNN}}} \mathcal{L}_{\text{est}}(Y_{\text{src}}, \hat{X}_{\text{src}}) + \lambda_{\text{CORAL}} \cdot \mathcal{L}_{\text{CORAL}}$$
+$$\min_{\Theta_{\text{DnCNN}}, \{\Theta_{\text{Head}}^{(k)}\}} \mathcal{L}_{\text{est}}(Y_{\text{src}}, \hat{X}_{\text{src}}) + \lambda_{\text{CORAL}} \cdot \mathcal{L}_{\text{CORAL}}$$
 
 where $\lambda_{\text{CORAL}} = 0.5$ (default).
 
 ---
 
-## 6. Execution Commands & Generated Artifacts
+## 7. Comparison: Direct CORAL vs Projection-Head CORAL
+
+| Feature | Direct CORAL (`train_CORAL_DnCNN.py`) | Projection-Head CORAL (`train_CORALpHead_DnCNN.py`) |
+| :--- | :--- | :--- |
+| **Alignment Target** | Raw pooled features $\bar{\mathbf{Z}} \in \mathbb{R}^{B \times C_k}$ | Non-linear embeddings $\mathbf{P} \in \mathbb{R}^{B \times 64}$ |
+| **Subspace Mapping** | Linear identity | 2-layer MLP (Dense $\to$ LayerNorm $\to$ GeLU $\to$ Dense) |
+| **Covariance Dimensions** | Varies by layer ($128 \times 128$, $512 \times 512$) | Fixed $64 \times 64$ for all layers |
+| **Cross-Layer Weighting** | Normalized by $1/(4 C_k^2)$ | Balanced uniformly across equal $d_{\text{proj}} = 64$ |
+| **Extracted Features** | `raw` GAP features $[N, C_k]$ | `raw` $[N, C_k]$ **and** `proj` $[N, 64]$ |
+| **Test-Time Complexity** | Zero overhead | Zero overhead (heads detached at inference) |
+
+---
+
+## 8. Execution Commands & Generated Artifacts
 
 ### Running Experiments
 ```bash
-# Multi-layer CORAL UDA on DnCNN (block_2 + block_3, 6 residual blocks, SNR = 5 dB)
+# 1. Direct CORAL UDA on DnCNN (4 residual blocks)
+python train_CORAL_DnCNN.py --snr 5 --coral-layers block_2 block_3 --n-blocks 4 --domain-weight 0.5 --save-features
+
+# 2. Projection-Head CORAL UDA on DnCNN (4 residual blocks, proj_dim = 64)
+python train_CORALpHead_DnCNN.py --snr 5 --coral-layers block_2 block_3 --n-blocks 4 --proj-dim 64 --domain-weight 0.5 --save-features
+
+# 3. Direct CORAL UDA on DnCNN (6 residual blocks)
 python train_CORAL_DnCNN.py --snr 5 --coral-layers block_2 block_3 --n-blocks 6 --domain-weight 0.5 --save-features
 
-# Source-only baseline (no domain adaptation)
+# 4. Source-Only Baseline (no domain adaptation)
 python train_CORAL_DnCNN.py --snr 5 --only-source
 
-# Quick code test (subset of data)
-python train_CORAL_DnCNN.py --test-code --snr 5 --save-features
+# 5. Quick Sanity Code Test (5 epochs on subset)
+python train_CORALpHead_DnCNN.py --test-code --snr 5 --save-features
 ```
 
 ### Generated Artifacts in `results/`
@@ -172,7 +233,7 @@ python train_CORAL_DnCNN.py --test-code --snr 5 --save-features
 * **`training_history.mat`**: Numerical progression across all epochs (Total Loss, Est Loss, CORAL Loss, 4-way NMSE dB, MSE, and SSIM).
 * **`evaluation_results.mat`**: Summary scalar metrics on test splits.
 * **`final_epoch.txt`**: Consolidated text evaluation report.
-* **`extracted_features.mat`**: Feature activations captured at `begin`, `mid`, and `last` training checkpoints.
+* **`extracted_features.mat`**: Raw and projected activations captured at `begin`, `mid`, and `last` training checkpoints with `train_indices_src` and `train_indices_tgt`.
 * **PDF Figures**:
   * `loss_total.pdf`: Total Loss, Estimation Loss, and CORAL Loss progression.
   * `metrics_nmse_db.pdf`: 4-way NMSE (dB) curves.
