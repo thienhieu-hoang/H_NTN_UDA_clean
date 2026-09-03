@@ -1,0 +1,5 @@
+Folders plotted in this comparison:
+  - Label: LI+DnCNN
+    Path:  C:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/single_dataset/A100_2p18e9_600km_70deg_30kHz/LI_DnCNN/LI_synthesize
+  - Label: LI+DnCNN (Std)
+    Path:  C:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/single_dataset/A100_2p18e9_600km_70deg_30kHz/LI_DnCNN_standardize/LI_synthesize

@@ -24,36 +24,36 @@ $trainedDataset = "A100_2p18e9_600km_70deg_30kHz"
 
 # 2. List the model subfolders to evaluate
 $models = @(
-    "LI_cGAN",
-    "LI_cGAN_standardize",
-    "LI_DnCNN",
-    "LI_DnCNN_standardize",
-    "LI_DnCNN_Attention",
-    "LI_DnCNN_Attention_standardize",
-    "LI_DnCNN_AxialAttention",
-    "LI_DnCNN_AxialAttention_standardize",
-    "LI_DnCNN_CrossAttention",
-    "LI_DnCNN_CrossAttention_standardize",
-    "LS_Attention",
-    "LS_Attention_standardize",
-    "LS_DnCNN_Attention"
+    "LI_cGAN",                              # 1
+    "LI_cGAN_standardize",                  # 2
+    "LI_DnCNN",                             # 3
+    # "LI_DnCNN_standardize",                 # 4
+    "LI_DnCNN_Attention",                   # 5
+    "LI_DnCNN_Attention_standardize",       # 6
+    "LI_DnCNN_AxialAttention",              # 7
+    "LI_DnCNN_AxialAttention_standardize",  # 8
+    "LI_DnCNN_CrossAttention",              # 9
+    "LI_DnCNN_CrossAttention_standardize",  # 10
+    "LS_Attention",                         # 11
+    "LS_Attention_standardize",             # 12
+    "LS_DnCNN_Attention"                    # 13
 )
 
 # Corresponding labels/legend names for evaluation
 $labels = @(
-    "LI+cGAN",
-    "LI+cGAN",
-    "LI+DnCNN",
-    "LI+DnCNN",
-    "LI+DnCNN+Attention",
-    "LI+DnCNN+Attention",
-    "LI+DnCNN+AxialAttention",
-    "LI+DnCNN+AxialAttention",
-    "LI+DnCNN+CrossAttention",
-    "LI+DnCNN+CrossAttention",
-    "LS+Attention",
-    "LS+Attention",
-    "LS+DnCNN+Attention"
+    "LI+cGAN",                  # 1
+    "LI+cGAN",                  # 2
+    "LI+DnCNN",                 # 3
+    # "LI+DnCNN",                 # 4
+    "LI+DnCNN+Attention",       # 5
+    "LI+DnCNN+Attention",       # 6
+    "LI+DnCNN+AxialAttention",  # 7
+    "LI+DnCNN+AxialAttention",  # 8
+    "LI+DnCNN+CrossAttention",  # 9
+    "LI+DnCNN+CrossAttention",  # 10
+    "LS+Attention",             # 11
+    "LS+Attention",             # 12
+    "LS+DnCNN+Attention"        # 13
 )
 
 # Verify list lengths match

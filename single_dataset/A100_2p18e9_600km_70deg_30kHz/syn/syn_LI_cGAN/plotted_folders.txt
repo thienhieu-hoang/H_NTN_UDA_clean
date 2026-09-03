@@ -1,0 +1,5 @@
+Folders plotted in this comparison:
+  - Label: LI+cGAN
+    Path:  C:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/single_dataset/A100_2p18e9_600km_70deg_30kHz/LI_cGAN/LI_synthesize
+  - Label: LI+cGAN (Std)
+    Path:  C:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/single_dataset/A100_2p18e9_600km_70deg_30kHz/LI_cGAN_standardize/LI_synthesize
