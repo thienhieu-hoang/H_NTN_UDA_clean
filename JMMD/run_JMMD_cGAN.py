@@ -66,6 +66,9 @@ Usage Examples
     # Run Source-Only Baseline (no JMMD domain adaptation)
     python run_JMMD_cGAN.py --snr 5 --only-source
 
+    # Train with sample-wise zero-mean unit-variance standardization
+    python run_JMMD_cGAN.py --snr 5 --standardize
+
     # Quick sanity check (runs in < 15 seconds)
     python run_JMMD_cGAN.py --test-code --snr 5
 ====================================================================================================
@@ -299,6 +302,20 @@ def batch_minmax_scale(x: tf.Tensor, y: tf.Tensor, lower_range: float = -1.0):
 
 
 @tf.function
+def batch_standardize(x: tf.Tensor, y: tf.Tensor):
+    """Vectorized per-sample zero-mean unit-variance standardization directly on GPU tensors [B, 132, 14, 2]."""
+    x_mean = tf.reduce_mean(x, axis=[1, 2], keepdims=True)
+    x_mean_sq = tf.reduce_mean(tf.square(x), axis=[1, 2], keepdims=True)
+    x_var = x_mean_sq - tf.square(x_mean)
+    x_std = tf.sqrt(tf.clip_by_value(x_var, 1e-12, tf.float32.max))
+
+    x_scaled = (x - x_mean) / x_std
+    y_scaled = (y - x_mean) / x_std
+
+    return x_scaled, y_scaled, x_mean, x_std
+
+
+@tf.function
 def compute_gradient_penalty(discriminator, real_samples, fake_samples):
     """Vectorized WGAN-GP Gradient Penalty computation."""
     batch_size = tf.shape(real_samples)[0]
@@ -400,7 +417,7 @@ def train_step_jmmd(
     generator, discriminator, gen_opt, disc_opt,
     src_input, src_real, tgt_input,
     adv_w, est_w, dom_w, temp_w, freq_w, ssim_w, gp_w,
-    kernel_mul=2.0, kernel_num=5, jmmd_mode="joint"
+    kernel_mul=2.0, kernel_num=5, jmmd_mode="joint", ssim_max_val=2.0
 ):
     """Compiled high-performance GPU step for JMMD cGAN UDA."""
     # -------------------------------------------------------------
@@ -429,7 +446,7 @@ def train_step_jmmd(
         g_adv_loss = -tf.reduce_mean(disc_fake_g)
 
         l1_est = tf.reduce_mean(tf.abs(src_real - src_fake))
-        ssim_loss = 1.0 - tf.reduce_mean(tf_ssim(src_real, src_fake, max_val=2.0))
+        ssim_loss = 1.0 - tf.reduce_mean(tf_ssim(src_real, src_fake, max_val=ssim_max_val))
         g_est_loss = l1_est + ssim_w * ssim_loss
 
         l_temp, l_freq = compute_smoothness_loss(src_fake)
@@ -454,7 +471,7 @@ def train_step_jmmd(
 def train_step_source_only(
     generator, discriminator, gen_opt, disc_opt,
     src_input, src_real,
-    adv_w, est_w, temp_w, freq_w, ssim_w, gp_w
+    adv_w, est_w, temp_w, freq_w, ssim_w, gp_w, ssim_max_val=2.0
 ):
     """Source-only WGAN-GP training step (no JMMD adaptation)."""
     with tf.GradientTape() as disc_tape:
@@ -475,7 +492,7 @@ def train_step_source_only(
         g_adv_loss = -tf.reduce_mean(disc_fake_g)
 
         l1_est = tf.reduce_mean(tf.abs(src_real - src_fake))
-        ssim_loss = 1.0 - tf.reduce_mean(tf_ssim(src_real, src_fake, max_val=2.0))
+        ssim_loss = 1.0 - tf.reduce_mean(tf_ssim(src_real, src_fake, max_val=ssim_max_val))
         g_est_loss = l1_est + ssim_w * ssim_loss
 
         l_temp, l_freq = compute_smoothness_loss(src_fake)
@@ -678,8 +695,8 @@ def compute_ssim_batch(H_pred: np.ndarray, H_true: np.ndarray) -> float:
     return float(np.mean(ssim_list))
 
 
-def infer_full_dataset(generator, H_perf_real: np.ndarray, H_in_real: np.ndarray, batch_size: int = 32, lower_range: float = -1.0):
-    """Full-dataset batch inference on GPU with inverse MinMax scaling."""
+def infer_full_dataset(generator, H_perf_real: np.ndarray, H_in_real: np.ndarray, batch_size: int = 32, lower_range: float = -1.0, standardize: bool = False):
+    """Full-dataset batch inference on GPU with inverse MinMax or Standardization scaling."""
     N = H_in_real.shape[0]
     preds = []
 
@@ -688,15 +705,21 @@ def infer_full_dataset(generator, H_perf_real: np.ndarray, H_in_real: np.ndarray
         x_raw = tf.convert_to_tensor(H_in_real[start:end], dtype=tf.float32)
         y_raw = tf.convert_to_tensor(H_perf_real[start:end], dtype=tf.float32)
 
-        x_sc, _, x_min, scale = batch_minmax_scale(x_raw, y_raw, lower_range)
-        out_sc, _ = generator(x_sc, training=False)
-
-        if lower_range == -1.0:
-            out_norm = (out_sc + 1.0) / 2.0
+        if standardize:
+            x_sc, _, x_mean, x_std = batch_standardize(x_raw, y_raw)
+            out_sc, _ = generator(x_sc, training=False)
+            out_denorm = (out_sc * x_std + x_mean).numpy()
         else:
-            out_norm = out_sc
+            x_sc, _, x_min, scale = batch_minmax_scale(x_raw, y_raw, lower_range)
+            out_sc, _ = generator(x_sc, training=False)
 
-        out_denorm = (out_norm * scale + x_min).numpy()
+            if lower_range == -1.0:
+                out_norm = (out_sc + 1.0) / 2.0
+            else:
+                out_norm = out_sc
+
+            out_denorm = (out_norm * scale + x_min).numpy()
+
         out_complex = out_denorm[..., 0] + 1j * out_denorm[..., 1]
         preds.append(out_complex)
 
@@ -704,7 +727,7 @@ def infer_full_dataset(generator, H_perf_real: np.ndarray, H_in_real: np.ndarray
 
 
 def extract_features_cgan(generator, H_perf_real: np.ndarray, H_in_real: np.ndarray,
-                          extract_layers: list, batch_size: int = 32, lower_range: float = -1.0):
+                          extract_layers: list, batch_size: int = 32, lower_range: float = -1.0, standardize: bool = False):
     """Extract intermediate features from UNet generator across full dataset."""
     N = H_in_real.shape[0]
     feats_dict = {lyr: [] for lyr in extract_layers}
@@ -714,7 +737,10 @@ def extract_features_cgan(generator, H_perf_real: np.ndarray, H_in_real: np.ndar
         x_raw = tf.convert_to_tensor(H_in_real[start:end], dtype=tf.float32)
         y_raw = tf.convert_to_tensor(H_perf_real[start:end], dtype=tf.float32)
 
-        x_sc, _, _, _ = batch_minmax_scale(x_raw, y_raw, lower_range)
+        if standardize:
+            x_sc, _, _, _ = batch_standardize(x_raw, y_raw)
+        else:
+            x_sc, _, _, _ = batch_minmax_scale(x_raw, y_raw, lower_range)
         _, f_list = generator(x_sc, training=False, return_features=True)
 
         for lyr_name, f_t in zip(extract_layers, f_list):
@@ -844,6 +870,7 @@ def main():
     parser.add_argument('--lr-g', type=float, default=DEFAULT_LR_G, help="Generator learning rate")
     parser.add_argument('--lr-d', type=float, default=DEFAULT_LR_D, help="Discriminator learning rate")
     parser.add_argument('--lower-range', type=int, default=-1, choices=[-1, 0], help="Min-max scaling lower range")
+    parser.add_argument('--standardize', action='store_true', default=False, help="Use sample-wise zero-mean unit-variance standardization instead of min-max scaling")
     parser.add_argument('--train-frac', type=float, default=DEFAULT_TRAIN_FRAC, help="Fraction of data for training")
     parser.add_argument('--val-frac', type=float, default=DEFAULT_VAL_FRAC, help="Fraction of data for validation")
     parser.add_argument('--save-features', action='store_true', default=DEFAULT_SAVE_FEATURES, help="Extract & save intermediate features")
@@ -886,9 +913,10 @@ def main():
         print(f"JMMD Extracted Layers: {extract_layers} ({len(extract_layers)} UNet layers)")
         print(f"Gaussian Kernels: {args.kernel_num} scales (mul={args.kernel_mul})")
         print(f"JMMD Loss Weight (lambda): {domain_weight}")
+    norm_str = "Standardize (Zero-Mean, Unit-Var)" if args.standardize else f"Min-Max [{args.lower_range}, 1]"
     print(f"Source Dataset: {src_mat_path}")
     print(f"Target Dataset: {tgt_mat_path}")
-    print(f"SNR: {args.snr} dB | Input Type: {args.type} | Normalization: [{args.lower_range}, 1]")
+    print(f"SNR: {args.snr} dB | Input Type: {args.type} | Normalization: {norm_str}")
     print(f"Split: {args.train_frac:.0%} Train / {args.val_frac:.0%} Val / {test_frac:.0%} Test")
     print("=" * 80)
 
@@ -965,16 +993,17 @@ def main():
     print(f"\n[Train] Starting JMMD cGAN Training for {args.n_epochs} Epochs ({n_batches} batches/epoch) ...")
     start_time = time.perf_counter()
 
+    ssim_max_val = 6.0 if args.standardize else (2.0 if args.lower_range == -1 else 1.0)
+
     for epoch in range(args.n_epochs):
-        # Feature Checkpointing at begin, mid, last
+        # Feature Checkpointing at begin, mid, and last epoch
         if args.save_features and epoch in feature_checkpoint_epochs:
             stage = feature_checkpoint_epochs[epoch]
-            src_f = extract_features_cgan(generator, src_train_perf, src_train_in, extract_layers, args.batch_size, args.lower_range)
-            tgt_f = extract_features_cgan(generator, tgt_train_perf, tgt_train_in, extract_layers, args.batch_size, args.lower_range)
-            for k, v in src_f.items():
-                saved_features[f"features_{stage}_{k}_src"] = v
-            for k, v in tgt_f.items():
-                saved_features[f"features_{stage}_{k}_tgt"] = v
+            src_feats = extract_features_cgan(generator, src_train_perf, src_train_in, extract_layers, args.batch_size, float(args.lower_range), standardize=args.standardize)
+            tgt_feats = extract_features_cgan(generator, tgt_train_perf, tgt_train_in, extract_layers, args.batch_size, float(args.lower_range), standardize=args.standardize)
+            for lyr in extract_layers:
+                saved_features[f"features_{stage}_{lyr}_src"] = src_feats[lyr]
+                saved_features[f"features_{stage}_{lyr}_tgt"] = tgt_feats[lyr]
             print(f"  [Features Saved] Captured intermediate activations at {stage} epoch ({epoch+1}) for layers: {extract_layers}")
 
         # Shuffle training sets
@@ -993,16 +1022,21 @@ def main():
             bx_tgt = tf.convert_to_tensor(tgt_train_in[p_tgt[s_idx:e_idx]], dtype=tf.float32)
             by_tgt = tf.convert_to_tensor(tgt_train_perf[p_tgt[s_idx:e_idx]], dtype=tf.float32)
 
-            # GPU MinMax scaling
-            x_src_sc, y_src_sc, _, _ = batch_minmax_scale(bx_src, by_src, float(args.lower_range))
-            x_tgt_sc, _, _, _ = batch_minmax_scale(bx_tgt, by_tgt, float(args.lower_range))
+            # GPU Scaling / Standardization
+            if args.standardize:
+                x_src_sc, y_src_sc, _, _ = batch_standardize(bx_src, by_src)
+                x_tgt_sc, _, _, _ = batch_standardize(bx_tgt, by_tgt)
+            else:
+                x_src_sc, y_src_sc, _, _ = batch_minmax_scale(bx_src, by_src, float(args.lower_range))
+                x_tgt_sc, _, _, _ = batch_minmax_scale(bx_tgt, by_tgt, float(args.lower_range))
 
             if args.only_source:
                 g_loss, d_loss, est_loss, jmmd_loss, _ = train_step_source_only(
                     generator, discriminator, gen_optimizer, disc_optimizer,
                     x_src_sc, y_src_sc,
                     args.adv_weight, args.est_weight, args.temporal_weight,
-                    args.frequency_weight, args.ssim_weight, args.gp_weight
+                    args.frequency_weight, args.ssim_weight, args.gp_weight,
+                    ssim_max_val=ssim_max_val
                 )
             else:
                 g_loss, d_loss, est_loss, jmmd_loss, _ = train_step_jmmd(
@@ -1010,7 +1044,8 @@ def main():
                     x_src_sc, y_src_sc, x_tgt_sc,
                     args.adv_weight, args.est_weight, domain_weight, args.temporal_weight,
                     args.frequency_weight, args.ssim_weight, args.gp_weight,
-                    kernel_mul=args.kernel_mul, kernel_num=args.kernel_num, jmmd_mode=args.jmmd_mode
+                    kernel_mul=args.kernel_mul, kernel_num=args.kernel_num, jmmd_mode=args.jmmd_mode,
+                    ssim_max_val=ssim_max_val
                 )
 
             epoch_g_loss += float(g_loss)
@@ -1029,11 +1064,11 @@ def main():
         history['train_jmmd_loss'].append(avg_jmmd_loss)
 
         # Periodic Validation
-        pred_val_src = infer_full_dataset(generator, src_val_perf, src_val_in, args.batch_size, float(args.lower_range))
+        pred_val_src = infer_full_dataset(generator, src_val_perf, src_val_in, args.batch_size, float(args.lower_range), standardize=args.standardize)
         val_nmse_src_db = compute_nmse_db(pred_val_src, src_data['H_perfect'][idx_val_src])
         history['val_nmse_src'].append(val_nmse_src_db)
 
-        pred_val_tgt = infer_full_dataset(generator, tgt_val_perf, tgt_val_in, args.batch_size, float(args.lower_range))
+        pred_val_tgt = infer_full_dataset(generator, tgt_val_perf, tgt_val_in, args.batch_size, float(args.lower_range), standardize=args.standardize)
         val_nmse_tgt_db = compute_nmse_db(pred_val_tgt, tgt_data['H_perfect'][idx_val_tgt])
         history['val_nmse_tgt'].append(val_nmse_tgt_db)
 
@@ -1053,7 +1088,7 @@ def main():
     # 1. Source Test Evaluation
     src_test_perf = src_data['H_perfect_real'][idx_test_src]
     src_test_in = src_data['H_input_real'][idx_test_src]
-    test_pred_src = infer_full_dataset(generator, src_test_perf, src_test_in, args.batch_size, float(args.lower_range))
+    test_pred_src = infer_full_dataset(generator, src_test_perf, src_test_in, args.batch_size, float(args.lower_range), standardize=args.standardize)
     test_nmse_db_src = compute_nmse_db(test_pred_src, src_data['H_perfect'][idx_test_src])
     test_mmse_src = compute_mmse(test_pred_src, src_data['H_perfect'][idx_test_src])
     test_ssim_src = compute_ssim_batch(test_pred_src, src_data['H_perfect'][idx_test_src])
@@ -1062,7 +1097,7 @@ def main():
     # 2. Target Test Evaluation
     tgt_test_perf = tgt_data['H_perfect_real'][idx_test_tgt]
     tgt_test_in = tgt_data['H_input_real'][idx_test_tgt]
-    test_pred_tgt = infer_full_dataset(generator, tgt_test_perf, tgt_test_in, args.batch_size, float(args.lower_range))
+    test_pred_tgt = infer_full_dataset(generator, tgt_test_perf, tgt_test_in, args.batch_size, float(args.lower_range), standardize=args.standardize)
     test_nmse_db_tgt = compute_nmse_db(test_pred_tgt, tgt_data['H_perfect'][idx_test_tgt])
     test_mmse_tgt = compute_mmse(test_pred_tgt, tgt_data['H_perfect'][idx_test_tgt])
     test_ssim_tgt = compute_ssim_batch(test_pred_tgt, tgt_data['H_perfect'][idx_test_tgt])
@@ -1100,6 +1135,7 @@ def main():
             f.write(f"SNR (dB):             {args.snr}\n")
             f.write(f"Input Type:           {args.type}\n")
             f.write(f"Domain Adaptation:    {'Source-Only' if args.only_source else f'JMMD cGAN ({args.jmmd_mode}) UDA'}\n")
+            f.write(f"Normalization:        {norm_str}\n")
             f.write(f"JMMD Layers:          {extract_layers}\n")
             f.write(f"Gaussian Kernels:     {args.kernel_num} scales (mul={args.kernel_mul})\n")
             f.write(f"Total Execution Time: {total_time:.1f} s\n\n")
@@ -1137,6 +1173,7 @@ def main():
         'indices_test_target': idx_test_tgt,
         'snr': args.snr,
         'input_type': args.type,
+        'standardize': args.standardize,
         'jmmd_mode': args.jmmd_mode,
         'jmmd_layers': np.array(extract_layers)
     }

@@ -74,6 +74,9 @@ Usage Examples:
     # Source-only baseline (no domain adaptation)
     python run_JMMD_LS_Attention.py --snr 5 --only-source
 
+    # Train with sample-wise zero-mean unit-variance standardization
+    python run_JMMD_LS_Attention.py --snr 5 --jmmd-layers layer1 layer2 --standardize
+
     # Quick test run (small subset, 5 epochs)
     python run_JMMD_LS_Attention.py --test-code --jmmd-layers layer1 layer2
 ====================================================================================================
@@ -458,11 +461,45 @@ def deMinMax_ha02(y_scaled, x_min, x_max, lower_range=-1):
     return y_denormed
 
 
-def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray, lower_range: int = -1):
+def standardizeScaler_ha02(x, y):
+    """
+    Sample-wise zero-mean unit-variance standardization:
+    - x: (B, 88, 2) pilot inputs
+    - y: (B, 132, 14, 2) full channel grids
+    """
+    B = tf.shape(x)[0]
+    x_mean = tf.reduce_mean(x, axis=1)  # (B, 2)
+    x_mean_sq = tf.reduce_mean(tf.square(x), axis=1)
+    x_var = x_mean_sq - tf.square(x_mean)
+    x_std = tf.sqrt(tf.clip_by_value(x_var, 1e-30, tf.float32.max))  # (B, 2)
+
+    x_mean_bc_x = tf.reshape(x_mean, [B, 1, 2])
+    scale_bc_x = tf.reshape(x_std, [B, 1, 2])
+    x_scaled = (x - x_mean_bc_x) / scale_bc_x
+
+    x_mean_bc_y = tf.reshape(x_mean, [B, 1, 1, 2])
+    scale_bc_y = tf.reshape(x_std, [B, 1, 1, 2])
+    y_scaled = (y - x_mean_bc_y) / scale_bc_y
+
+    return x_scaled, y_scaled, x_mean, x_std
+
+
+def deStandardize_ha02(y_scaled, x_mean, x_std):
+    """Invert sample-wise standardization for HA02 predicted channel grids."""
+    B = tf.shape(y_scaled)[0]
+    scale_bc = tf.reshape(x_std, [B, 1, 1, 2])
+    shift_bc = tf.reshape(x_mean, [B, 1, 1, 2])
+    return y_scaled * scale_bc + shift_bc
+
+
+def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray, lower_range: int = -1, standardize: bool = False):
     """Convert complex channel batches to scaled real tensors."""
     y = tf.cast(complx2real(H_perf_batch), tf.float32)
     x = tf.cast(complx2real(H_in_batch), tf.float32)
-    x_sc, y_sc, val1, val2 = minmaxScaler_ha02(x, y, lower_range)
+    if standardize:
+        x_sc, y_sc, val1, val2 = standardizeScaler_ha02(x, y)
+    else:
+        x_sc, y_sc, val1, val2 = minmaxScaler_ha02(x, y, lower_range)
     return x_sc, y_sc, val1, val2
 
 
@@ -664,7 +701,7 @@ def split_indices(N: int, train_frac: float = 0.70, val_frac: float = 0.15, seed
 # =============================================================================
 # 8. INFERENCE & FEATURE EXTRACTION HELPERS
 # =============================================================================
-def infer_full_dataset(model, H_perf: np.ndarray, H_in: np.ndarray, batch_size: int = 16, lower_range: int = -1):
+def infer_full_dataset(model, H_perf: np.ndarray, H_in: np.ndarray, batch_size: int = 16, lower_range: int = -1, standardize: bool = False):
     N = H_in.shape[0]
     preds = []
     for start in range(0, N, batch_size):
@@ -672,15 +709,18 @@ def infer_full_dataset(model, H_perf: np.ndarray, H_in: np.ndarray, batch_size: 
         x_batch = H_in[start:end]
         y_batch = H_perf[start:end]
         
-        x_sc, _, val1, val2 = preprocess_batch(y_batch, x_batch, lower_range)
+        x_sc, _, val1, val2 = preprocess_batch(y_batch, x_batch, lower_range, standardize=standardize)
         out_sc = model(x_sc, training=False)
-        out_real = deMinMax_ha02(out_sc, val1, val2, lower_range).numpy()
+        if standardize:
+            out_real = deStandardize_ha02(out_sc, val1, val2).numpy()
+        else:
+            out_real = deMinMax_ha02(out_sc, val1, val2, lower_range).numpy()
         out_comp = out_real[..., 0] + 1j * out_real[..., 1]
         preds.append(out_comp)
     return np.concatenate(preds, axis=0)
 
 
-def extract_features(model, H_in: np.ndarray, batch_size: int = 16, selected_layers: list = None, lower_range: int = -1):
+def extract_features(model, H_in: np.ndarray, batch_size: int = 16, selected_layers: list = None, lower_range: int = -1, standardize: bool = False):
     if selected_layers is None or len(selected_layers) == 0:
         return {}
     
@@ -693,7 +733,7 @@ def extract_features(model, H_in: np.ndarray, batch_size: int = 16, selected_lay
         x_batch = H_in[start:end]
         y_batch = dummy_y[:end - start]
         
-        x_sc, _, _, _ = preprocess_batch(y_batch, x_batch, lower_range)
+        x_sc, _, _, _ = preprocess_batch(y_batch, x_batch, lower_range, standardize=standardize)
         _, feats = model(x_sc, training=False, return_features=True, selected_layers=selected_layers)
         
         for lyr, f_t in zip(selected_layers, feats):
@@ -824,6 +864,7 @@ def main():
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE, help="Batch size")
     parser.add_argument('--lr', type=float, default=1e-3, help="Learning rate")
     parser.add_argument('--lower-range', type=int, default=-1, choices=[-1, 0], help="Min-max scaling lower range")
+    parser.add_argument('--standardize', action='store_true', default=False, help="Use sample-wise zero-mean unit-variance standardization instead of min-max scaling")
     parser.add_argument('--save-features', action='store_true', default=SAVE_FEATURES, help="Extract & save intermediate features")
     parser.add_argument('--test-code', action='store_true', default=TEST_CODE, help="Fast sanity check")
     parser.add_argument('--no-gpu', action='store_true', help="Disable GPU execution")
@@ -864,9 +905,10 @@ def main():
         print(f"JMMD Extracted Layers: {selected_layers} ({len(selected_layers)} Latent RKHS Spaces)")
         print(f"Gaussian Kernels: {args.kernel_num} scales (mul={args.kernel_mul})")
         print(f"JMMD Loss Weight (lambda): {domain_weight}")
+    norm_str = "Standardize (Zero-Mean, Unit-Var)" if args.standardize else f"Min-Max [{args.lower_range}, 1]"
     print(f"Source Dataset: {src_mat_path}")
     print(f"Target Dataset: {tgt_mat_path}")
-    print(f"SNR: {args.snr} dB | Input Type: {args.type} | Normalization: [{args.lower_range}, 1]")
+    print(f"SNR: {args.snr} dB | Input Type: {args.type} | Normalization: {norm_str}")
     print(f"Split: {args.train_frac:.0%} Train / {args.val_frac:.0%} Val / {test_frac:.0%} Test")
     print("=" * 80)
 
@@ -927,6 +969,9 @@ def main():
     mid_epoch = args.n_epochs // 2
     feature_checkpoint_epochs = {0: 'begin', mid_epoch: 'mid', args.n_epochs - 1: 'last'}
 
+    # Dynamic SSIM dynamic range
+    ssim_max_val = 6.0 if args.standardize else (2.0 if args.lower_range == -1 else 1.0)
+
     # =========================================================================
     # COMPILED GPU TRAINING STEPS
     # =========================================================================
@@ -941,7 +986,7 @@ def main():
             
             # 3. Source Estimation Loss (MSE + SSIM)
             mse_loss = tf.reduce_mean(tf.square(y_src - y_pred_src))
-            ssim_loss = 1.0 - tf.reduce_mean(tf_ssim(y_src, y_pred_src, max_val=2.0))
+            ssim_loss = 1.0 - tf.reduce_mean(tf_ssim(y_src, y_pred_src, max_val=ssim_max_val))
             est_loss = mse_loss + args.ssim_weight * ssim_loss
             
             # 4. Multi-Layer JMMD RKHS Loss
@@ -963,7 +1008,7 @@ def main():
         with tf.GradientTape() as tape:
             y_pred_src = model(x_src, training=True)
             mse_loss = tf.reduce_mean(tf.square(y_src - y_pred_src))
-            ssim_loss = 1.0 - tf.reduce_mean(tf_ssim(y_src, y_pred_src, max_val=2.0))
+            ssim_loss = 1.0 - tf.reduce_mean(tf_ssim(y_src, y_pred_src, max_val=ssim_max_val))
             total_loss = mse_loss + args.ssim_weight * ssim_loss
             
         grads = tape.gradient(total_loss, model.trainable_variables)
@@ -977,8 +1022,8 @@ def main():
         # Feature Checkpointing at begin, mid, last
         if args.save_features and epoch in feature_checkpoint_epochs:
             stage = feature_checkpoint_epochs[epoch]
-            src_f = extract_features(model, H_in_src[idx_train_src], args.batch_size, selected_layers, args.lower_range)
-            tgt_f = extract_features(model, H_in_tgt[idx_train_tgt], args.batch_size, selected_layers, args.lower_range)
+            src_f = extract_features(model, H_in_src[idx_train_src], args.batch_size, selected_layers, args.lower_range, standardize=args.standardize)
+            tgt_f = extract_features(model, H_in_tgt[idx_train_tgt], args.batch_size, selected_layers, args.lower_range, standardize=args.standardize)
             for k, v in src_f.items():
                 saved_features[f"features_{stage}_{k}_src"] = v
             for k, v in tgt_f.items():
@@ -1001,8 +1046,8 @@ def main():
             s_idx = b * args.batch_size
             e_idx = s_idx + args.batch_size
             
-            x_src_b, y_src_b, _, _ = preprocess_batch(train_perf_src[s_idx:e_idx], train_in_src[s_idx:e_idx], args.lower_range)
-            x_tgt_b, y_tgt_b, _, _ = preprocess_batch(train_perf_tgt[s_idx:e_idx], train_in_tgt[s_idx:e_idx], args.lower_range)
+            x_src_b, y_src_b, _, _ = preprocess_batch(train_perf_src[s_idx:e_idx], train_in_src[s_idx:e_idx], args.lower_range, standardize=args.standardize)
+            x_tgt_b, y_tgt_b, _, _ = preprocess_batch(train_perf_tgt[s_idx:e_idx], train_in_tgt[s_idx:e_idx], args.lower_range, standardize=args.standardize)
 
             if args.only_source:
                 l_tot, l_est, l_jmd = _train_step_source_only(x_src_b, y_src_b)
@@ -1022,11 +1067,11 @@ def main():
         history['train_jmmd_loss'].append(avg_jmmd)
 
         # Periodic Validation
-        pred_val_src = infer_full_dataset(model, H_perf_src[idx_val_src], H_in_src[idx_val_src], args.batch_size, args.lower_range)
+        pred_val_src = infer_full_dataset(model, H_perf_src[idx_val_src], H_in_src[idx_val_src], args.batch_size, args.lower_range, standardize=args.standardize)
         val_nmse_src_db = compute_nmse_db(pred_val_src, H_perf_src[idx_val_src])
         history['val_nmse_src'].append(val_nmse_src_db)
 
-        pred_val_tgt = infer_full_dataset(model, H_perf_tgt[idx_val_tgt], H_in_tgt[idx_val_tgt], args.batch_size, args.lower_range)
+        pred_val_tgt = infer_full_dataset(model, H_perf_tgt[idx_val_tgt], H_in_tgt[idx_val_tgt], args.batch_size, args.lower_range, standardize=args.standardize)
         val_nmse_tgt_db = compute_nmse_db(pred_val_tgt, H_perf_tgt[idx_val_tgt])
         history['val_nmse_tgt'].append(val_nmse_tgt_db)
 
@@ -1044,14 +1089,14 @@ def main():
     print("=" * 80)
 
     # 1. Source Test Evaluation
-    test_pred_src = infer_full_dataset(model, H_perf_src[idx_test_src], H_in_src[idx_test_src], args.batch_size, args.lower_range)
+    test_pred_src = infer_full_dataset(model, H_perf_src[idx_test_src], H_in_src[idx_test_src], args.batch_size, args.lower_range, standardize=args.standardize)
     test_nmse_db_src = compute_nmse_db(test_pred_src, H_perf_src[idx_test_src])
     test_mmse_src = compute_mmse(test_pred_src, H_perf_src[idx_test_src])
     test_ssim_src = compute_ssim_batch(test_pred_src, H_perf_src[idx_test_src])
     print(f"  Source Domain -> NMSE: {test_nmse_db_src:.2f} dB | MMSE: {test_mmse_src:.6e} | SSIM: {test_ssim_src:.4f}")
 
     # 2. Target Test Evaluation
-    test_pred_tgt = infer_full_dataset(model, H_perf_tgt[idx_test_tgt], H_in_tgt[idx_test_tgt], args.batch_size, args.lower_range)
+    test_pred_tgt = infer_full_dataset(model, H_perf_tgt[idx_test_tgt], H_in_tgt[idx_test_tgt], args.batch_size, args.lower_range, standardize=args.standardize)
     test_nmse_db_tgt = compute_nmse_db(test_pred_tgt, H_perf_tgt[idx_test_tgt])
     test_mmse_tgt = compute_mmse(test_pred_tgt, H_perf_tgt[idx_test_tgt])
     test_ssim_tgt = compute_ssim_batch(test_pred_tgt, H_perf_tgt[idx_test_tgt])
@@ -1089,6 +1134,7 @@ def main():
             f.write(f"SNR (dB):             {args.snr}\n")
             f.write(f"Input Type:           {args.type}\n")
             f.write(f"Domain Adaptation:    {'Source-Only' if args.only_source else f'JMMD ({args.jmmd_mode}) UDA'}\n")
+            f.write(f"Normalization:        {norm_str}\n")
             f.write(f"JMMD Layers:          {selected_layers}\n")
             f.write(f"Gaussian Kernels:     {args.kernel_num} scales (mul={args.kernel_mul})\n")
             f.write(f"Total Execution Time: {total_time:.1f} s\n\n")
@@ -1129,6 +1175,7 @@ def main():
         'indices_test_target': idx_test_tgt,
         'snr': args.snr,
         'input_type': args.type,
+        'standardize': args.standardize,
         'jmmd_mode': args.jmmd_mode,
         'jmmd_layers': np.array(selected_layers)
     }

@@ -64,8 +64,11 @@ Usage Examples
     # Source-only baseline (no domain adaptation)
     python run_CORAL_cGAN.py --type LI --snr 5 --only-source
 
+    # Train with sample-wise zero-mean unit-variance standardization
+    python run_cGAN_CORAL.py --type LI --snr 5 --standardize
+
     # Quick test run (small subset, 5 epochs)
-    python run_CORAL_cGAN.py --type LI --test-code
+    python run_cGAN_CORAL.py --type LI --test-code
 ====================================================================================================
 """
 
@@ -324,6 +327,29 @@ def batch_minmax_descale(x_norm, x_min, x_max, lower_range=-1.0):
 
 
 @tf.function
+def batch_standardize(x):
+    """Vectorized GPU Sample-wise Zero-Mean Unit-Variance Standardization along subcarrier and symbol axes."""
+    mean = tf.reduce_mean(x, axis=[1, 2], keepdims=True)
+    mean_sq = tf.reduce_mean(tf.square(x), axis=[1, 2], keepdims=True)
+    var = mean_sq - tf.square(mean)
+    std = tf.sqrt(tf.clip_by_value(var, 1e-12, tf.float32.max))
+    x_norm = (x - mean) / std
+    return x_norm, mean, std
+
+
+@tf.function
+def batch_standardize_fixed(y, mean, std):
+    """Standardize target channel using predefined mean/std parameters."""
+    return (y - mean) / std
+
+
+@tf.function
+def batch_destandardize(x_norm, mean, std):
+    """Vectorized GPU Descaling from standardized back to original physical channel scale."""
+    return x_norm * std + mean
+
+
+@tf.function
 def compute_gradient_penalty(discriminator, real, fake):
     """WGAN-GP Gradient Penalty computed entirely on GPU."""
     batch_size = tf.shape(real)[0]
@@ -387,13 +413,20 @@ def compute_smoothness_loss(x, temporal_weight=0.02, frequency_weight=0.1):
 def train_step_coral(generator, discriminator, opt_gen, opt_disc,
                      x_src_raw, y_src_raw, x_tgt_raw, y_tgt_raw,
                      adv_weight=0.005, est_weight=1.0, domain_weight=0.5,
-                     temporal_weight=0.02, frequency_weight=0.1, is_residual=False, lower_range=-1.0):
+                     temporal_weight=0.02, frequency_weight=0.1, is_residual=False, lower_range=-1.0,
+                     standardize=False):
     """Fully fused and compiled cGAN + CORAL training step."""
-    # Fast GPU Normalization
-    x_src, x_min_s, x_max_s = batch_minmax_scale(x_src_raw, lower_range)
-    y_src = batch_minmax_scale_fixed(y_src_raw, x_min_s, x_max_s, lower_range)
-    x_tgt, x_min_t, x_max_t = batch_minmax_scale(x_tgt_raw, lower_range)
-    y_tgt = batch_minmax_scale_fixed(y_tgt_raw, x_min_t, x_max_t, lower_range)
+    # Fast GPU Normalization / Standardization
+    if standardize:
+        x_src, mean_s, std_s = batch_standardize(x_src_raw)
+        y_src = batch_standardize_fixed(y_src_raw, mean_s, std_s)
+        x_tgt, mean_t, std_t = batch_standardize(x_tgt_raw)
+        y_tgt = batch_standardize_fixed(y_tgt_raw, mean_t, std_t)
+    else:
+        x_src, x_min_s, x_max_s = batch_minmax_scale(x_src_raw, lower_range)
+        y_src = batch_minmax_scale_fixed(y_src_raw, x_min_s, x_max_s, lower_range)
+        x_tgt, x_min_t, x_max_t = batch_minmax_scale(x_tgt_raw, lower_range)
+        y_tgt = batch_minmax_scale_fixed(y_tgt_raw, x_min_t, x_max_t, lower_range)
 
     # 1. Train Discriminator (WGAN-GP on source domain)
     with tf.GradientTape() as tape_d:
@@ -443,10 +476,15 @@ def train_step_coral(generator, discriminator, opt_gen, opt_disc,
 def train_step_source_only(generator, discriminator, opt_gen, opt_disc,
                            x_src_raw, y_src_raw,
                            adv_weight=0.005, est_weight=1.0,
-                           temporal_weight=0.02, frequency_weight=0.1, is_residual=False, lower_range=-1.0):
+                           temporal_weight=0.02, frequency_weight=0.1, is_residual=False, lower_range=-1.0,
+                           standardize=False):
     """Fully fused and compiled Source-Only cGAN training step."""
-    x_src, x_min_s, x_max_s = batch_minmax_scale(x_src_raw, lower_range)
-    y_src = batch_minmax_scale_fixed(y_src_raw, x_min_s, x_max_s, lower_range)
+    if standardize:
+        x_src, mean_s, std_s = batch_standardize(x_src_raw)
+        y_src = batch_standardize_fixed(y_src_raw, mean_s, std_s)
+    else:
+        x_src, x_min_s, x_max_s = batch_minmax_scale(x_src_raw, lower_range)
+        y_src = batch_minmax_scale_fixed(y_src_raw, x_min_s, x_max_s, lower_range)
 
     # 1. Train Discriminator
     with tf.GradientTape() as tape_d:
@@ -485,11 +523,16 @@ def train_step_source_only(generator, discriminator, opt_gen, opt_disc,
 
 
 @tf.function
-def val_step_fast(generator, x_raw, y_raw, is_residual=False, lower_range=-1.0):
+def val_step_fast(generator, x_raw, y_raw, is_residual=False, lower_range=-1.0, standardize=False):
     """Fast compiled validation step measuring exact squared error and reference power on GPU."""
-    x_norm, x_min, x_max = batch_minmax_scale(x_raw, lower_range)
-    pred_norm, _ = generator(x_norm, training=False)
-    pred_descaled = batch_minmax_descale(pred_norm, x_min, x_max, lower_range)
+    if standardize:
+        x_norm, mean, std = batch_standardize(x_raw)
+        pred_norm, _ = generator(x_norm, training=False)
+        pred_descaled = batch_destandardize(pred_norm, mean, std)
+    else:
+        x_norm, x_min, x_max = batch_minmax_scale(x_raw, lower_range)
+        pred_norm, _ = generator(x_norm, training=False)
+        pred_descaled = batch_minmax_descale(pred_norm, x_min, x_max, lower_range)
     if is_residual:
         pred_descaled = x_raw + pred_descaled
 
@@ -665,7 +708,7 @@ def compute_ssim_fast(H_pred: np.ndarray, H_true: np.ndarray) -> float:
     return float(tf.reduce_mean(s).numpy())
 
 
-def infer_and_evaluate_fast(generator, ds, is_residual=False, lower_range=-1.0):
+def infer_and_evaluate_fast(generator, ds, is_residual=False, lower_range=-1.0, standardize=False):
     """Full-dataset inference and metric evaluation over tf.data.Dataset."""
     all_preds = []
     all_trues = []
@@ -674,9 +717,14 @@ def infer_and_evaluate_fast(generator, ds, is_residual=False, lower_range=-1.0):
     total_samples = 0
 
     for x_batch, y_batch in ds:
-        x_norm, x_min, x_max = batch_minmax_scale(x_batch, lower_range)
-        pred_norm, _ = generator(x_norm, training=False)
-        pred_real = batch_minmax_descale(pred_norm, x_min, x_max, lower_range).numpy()
+        if standardize:
+            x_norm, mean, std = batch_standardize(x_batch)
+            pred_norm, _ = generator(x_norm, training=False)
+            pred_real = batch_destandardize(pred_norm, mean, std).numpy()
+        else:
+            x_norm, x_min, x_max = batch_minmax_scale(x_batch, lower_range)
+            pred_norm, _ = generator(x_norm, training=False)
+            pred_real = batch_minmax_descale(pred_norm, x_min, x_max, lower_range).numpy()
         if is_residual:
             pred_real = x_batch.numpy() + pred_real
 
@@ -703,14 +751,17 @@ def infer_and_evaluate_fast(generator, ds, is_residual=False, lower_range=-1.0):
     return H_pred_all, {'nmse': nmse, 'nmse_db': nmse_db, 'mmse': mmse, 'ssim': ssim}
 
 
-def extract_dataset_features_fast(generator, ds, lower_range=-1.0, selected_layers=None):
+def extract_dataset_features_fast(generator, ds, lower_range=-1.0, selected_layers=None, standardize=False):
     """Extract intermediate representations across dataset without redundant conversions."""
     if not selected_layers:
         return {}
     layer_feats = {lyr: [] for lyr in selected_layers}
 
     for x_batch, _ in ds:
-        x_norm, _, _ = batch_minmax_scale(x_batch, lower_range)
+        if standardize:
+            x_norm, _, _ = batch_standardize(x_batch)
+        else:
+            x_norm, _, _ = batch_minmax_scale(x_batch, lower_range)
         _, feats = generator(x_norm, training=False, return_features=True)
         for lyr, f_t in zip(selected_layers, feats):
             # Flatten or GAP
@@ -982,6 +1033,7 @@ def main():
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE, help="Batch size")
     parser.add_argument('--test-code', action='store_true', default=TEST_CODE, help="Run with subset of data for testing")
     parser.add_argument('--lower-range', type=float, default=-1.0, choices=[0.0, -1.0], help="Scaling range for minmax ([-1, 1] or [0, 1])")
+    parser.add_argument('--standardize', action='store_true', default=False, help="Use sample-wise zero-mean unit-variance standardization instead of min-max scaling")
     parser.add_argument('--adv-weight', type=float, default=0.005, help="GAN adversarial loss weight")
     parser.add_argument('--est-weight', type=float, default=1.0, help="Estimation loss weight")
     parser.add_argument('--domain-weight', type=float, default=0.5, help="CORAL loss weight")
@@ -1025,10 +1077,11 @@ def main():
     if not args.only_source:
         print(f"CORAL Extracted Layers: {selected_layers} ({'Multi-layer' if len(selected_layers) > 1 else 'Single-layer'})")
         print(f"CORAL Loss Weight (lambda): {domain_weight}")
+    norm_str = "Standardize (Zero-Mean, Unit-Var)" if args.standardize else f"Min-Max [{args.lower_range}, 1.0]"
     print(f"Architecture: {'Residual cGAN' if args.residual else 'Direct cGAN'}")
     print(f"Source Dataset: {source_data_file_path}")
     print(f"Target Dataset: {target_data_file_path}")
-    print(f"SNR: {args.snr} dB | Input Type: {args.type} | Normalization: [{args.lower_range}, 1.0]")
+    print(f"SNR: {args.snr} dB | Input Type: {args.type} | Normalization: {norm_str}")
     print(f"Split: {args.train_frac:.0%} Train / {args.val_frac:.0%} Val / {test_frac:.0%} Test")
     print("=" * 80)
 
@@ -1180,8 +1233,8 @@ def main():
         # Save Intermediate Features at Checkpoint Epochs
         if args.save_features and epoch in feature_checkpoint_epochs:
             stage = feature_checkpoint_epochs[epoch]
-            src_feats = extract_dataset_features_fast(generator, ds_src_train, args.lower_range, selected_layers)
-            tgt_feats = extract_dataset_features_fast(generator, ds_tgt_train, args.lower_range, selected_layers)
+            src_feats = extract_dataset_features_fast(generator, ds_src_train, args.lower_range, selected_layers, standardize=args.standardize)
+            tgt_feats = extract_dataset_features_fast(generator, ds_tgt_train, args.lower_range, selected_layers, standardize=args.standardize)
             for lyr in selected_layers:
                 layer_num = lyr.replace('d', 'l').replace('u', 'u')
                 saved_features[f'features_{stage}_{lyr}_src'] = src_feats[lyr]
@@ -1199,7 +1252,8 @@ def main():
                     x_s, y_s,
                     adv_weight=args.adv_weight, est_weight=args.est_weight,
                     temporal_weight=args.temporal_weight, frequency_weight=args.frequency_weight,
-                    is_residual=args.residual, lower_range=args.lower_range
+                    is_residual=args.residual, lower_range=args.lower_range,
+                    standardize=args.standardize
                 )
                 ep_g_loss += float(g_l)
                 ep_est_loss += float(e_l)
@@ -1213,7 +1267,8 @@ def main():
                     x_s, y_s, x_t, y_t,
                     adv_weight=args.adv_weight, est_weight=args.est_weight, domain_weight=domain_weight,
                     temporal_weight=args.temporal_weight, frequency_weight=args.frequency_weight,
-                    is_residual=args.residual, lower_range=args.lower_range
+                    is_residual=args.residual, lower_range=args.lower_range,
+                    standardize=args.standardize
                 )
                 ep_g_loss += float(g_l)
                 ep_est_loss += float(e_l)
@@ -1235,10 +1290,10 @@ def main():
         # Track metrics (NMSE, MSE, SSIM) across splits
         eval_interval = 1 if (args.n_epochs <= 50 or args.test_code) else 5
         if (epoch + 1) % eval_interval == 0 or epoch == args.n_epochs - 1:
-            _, m_s_tr = infer_and_evaluate_fast(generator, eval_sub_src_tr, is_residual=args.residual, lower_range=args.lower_range)
-            _, m_s_val = infer_and_evaluate_fast(generator, ds_src_val, is_residual=args.residual, lower_range=args.lower_range)
-            _, m_t_tr = infer_and_evaluate_fast(generator, eval_sub_tgt_tr, is_residual=args.residual, lower_range=args.lower_range)
-            _, m_t_val = infer_and_evaluate_fast(generator, ds_tgt_val, is_residual=args.residual, lower_range=args.lower_range)
+            _, m_s_tr = infer_and_evaluate_fast(generator, eval_sub_src_tr, is_residual=args.residual, lower_range=args.lower_range, standardize=args.standardize)
+            _, m_s_val = infer_and_evaluate_fast(generator, ds_src_val, is_residual=args.residual, lower_range=args.lower_range, standardize=args.standardize)
+            _, m_t_tr = infer_and_evaluate_fast(generator, eval_sub_tgt_tr, is_residual=args.residual, lower_range=args.lower_range, standardize=args.standardize)
+            _, m_t_val = infer_and_evaluate_fast(generator, ds_tgt_val, is_residual=args.residual, lower_range=args.lower_range, standardize=args.standardize)
 
             history['eval_epochs'].append(epoch + 1)
             history['nmse_train_src_db'].append(m_s_tr['nmse_db'])
@@ -1271,15 +1326,15 @@ def main():
 
     # 1. Full Test Sets Inference
     H_pred_test_src, metrics_test_src = infer_and_evaluate_fast(
-        generator, ds_src_test, is_residual=args.residual, lower_range=args.lower_range
+        generator, ds_src_test, is_residual=args.residual, lower_range=args.lower_range, standardize=args.standardize
     )
     H_pred_test_tgt, metrics_test_tgt = infer_and_evaluate_fast(
-        generator, ds_tgt_test, is_residual=args.residual, lower_range=args.lower_range
+        generator, ds_tgt_test, is_residual=args.residual, lower_range=args.lower_range, standardize=args.standardize
     )
 
     # 2. Sample Training Predictions for Plotted Reconstruction MAT
-    H_pred_train_src_sub, _ = infer_and_evaluate_fast(generator, eval_sub_src_tr, is_residual=args.residual, lower_range=args.lower_range)
-    H_pred_train_tgt_sub, _ = infer_and_evaluate_fast(generator, eval_sub_tgt_tr, is_residual=args.residual, lower_range=args.lower_range)
+    H_pred_train_src_sub, _ = infer_and_evaluate_fast(generator, eval_sub_src_tr, is_residual=args.residual, lower_range=args.lower_range, standardize=args.standardize)
+    H_pred_train_tgt_sub, _ = infer_and_evaluate_fast(generator, eval_sub_tgt_tr, is_residual=args.residual, lower_range=args.lower_range, standardize=args.standardize)
 
     print(f"  Source Domain -> NMSE: {metrics_test_src['nmse_db']:.2f} dB | MMSE: {metrics_test_src['mmse']:.6e} | SSIM: {metrics_test_src['ssim']:.4f}")
     print(f"  Target Domain -> NMSE: {metrics_test_tgt['nmse_db']:.2f} dB | MMSE: {metrics_test_tgt['mmse']:.6e} | SSIM: {metrics_test_tgt['ssim']:.4f}")
@@ -1335,6 +1390,7 @@ def main():
             f.write(f"SNR (dB):             {args.snr}\n")
             f.write(f"Input Type:           {args.type}\n")
             f.write(f"Domain Adaptation:    {'Source-Only' if args.only_source else 'CORAL UDA'}\n")
+            f.write(f"Normalization:        {norm_str}\n")
             f.write(f"CORAL Layers:         {selected_layers}\n")
             f.write(f"Residual Mode:        {args.residual}\n")
             f.write(f"Total Execution Time: {total_time:.1f} s\n\n")
@@ -1375,6 +1431,7 @@ def main():
         'snr': args.snr,
         'input_type': args.type,
         'residual': args.residual,
+        'standardize': args.standardize,
         'coral_layers': np.array(selected_layers)
     }
     eval_path = os.path.join(output_dir, 'evaluation_results.mat')
