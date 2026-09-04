@@ -2,6 +2,7 @@ __pycache__/
 *.h5
 *.mat
 !single_dataset/**/*.mat
+!CORAL/**/*.mat
 !single_dataset/**/*.h5
 !synthesize*.mat
 !*results.mat
