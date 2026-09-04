@@ -385,7 +385,100 @@ class HA02Model(tf.keras.Model):
 
 
 # =============================================================================
-# 5. CORAL LOSS COMPUTATION
+# 5. BRANCHED HA02 MODEL & ONNX EXPORT HELPERS
+# =============================================================================
+class BranchedHA02Model(tf.keras.Model):
+    """
+    Combined multi-output tree architecture containing both:
+    1. Main Channel Estimation Backbone -> out_grid [B, 132, 14, 2]
+    2. Multi-Layer Non-Linear Projection Heads -> p_layer1 [B, proj_dim], p_layer2 [B, proj_dim]...
+    Used to export the complete training tree (main estimator + projection heads) into a single .onnx file.
+    """
+    def __init__(self, main_model, proj_heads, selected_layers, **kwargs):
+        super(BranchedHA02Model, self).__init__(**kwargs)
+        self.main_model = main_model
+        self.proj_heads = proj_heads
+        self.selected_layers = selected_layers
+
+    def call(self, inputs, training=False):
+        out_grid, extracted = self.main_model(
+            inputs, training=training, return_features=True, selected_layers=self.selected_layers
+        )
+        outputs = [out_grid]
+        for lyr, z in zip(self.selected_layers, extracted):
+            p = self.proj_heads[lyr](z, training=training)
+            outputs.append(p)
+        return tuple(outputs)
+
+
+def export_model_to_onnx(model: tf.keras.Model, save_path: str, input_shape=(None, 88, 2), opset: int = 13):
+    """
+    Export Keras model to ONNX format using tf2onnx.
+    Supports dynamic batch size (default None) and optional onnxsim graph simplification.
+    """
+    try:
+        import tf2onnx
+    except ImportError:
+        print('[ONNX] Installing tf2onnx package for ONNX model export ...')
+        import subprocess
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'tf2onnx'])
+        import tf2onnx
+
+    try:
+        batch_dim = None if (input_shape[0] is None or input_shape[0] == 1) else input_shape[0]
+        sig_shape = (batch_dim, input_shape[1], input_shape[2]) if len(input_shape) == 3 else input_shape
+        spec = (tf.TensorSpec(sig_shape, tf.float32, name='input_channel'),)
+        
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        model_proto, _ = tf2onnx.convert.from_keras(
+            model, 
+            input_signature=spec, 
+            opset=opset, 
+            output_path=save_path
+        )
+        print(f'[ONNX Export] Successfully saved ONNX model -> {save_path}')
+
+        # Optionally simplify ONNX graph using onnxsim
+        try:
+            from onnxsim import simplify
+            import onnx
+            model_onnx = onnx.load(save_path)
+            model_simp, check = simplify(model_onnx)
+            if check:
+                onnx.save(model_simp, save_path)
+                print(f'[ONNX Simplifier] Optimized and simplified ONNX graph -> {save_path}')
+        except Exception:
+            pass
+
+        return True
+    except Exception as e:
+        print(f'[ONNX Export Warning] Failed to export ONNX model to {save_path}: {e}')
+        return False
+
+
+def export_projection_head_to_onnx(head: ProjectionHead, save_path: str, in_dim: int, opset: int = 13):
+    """Export an individual Projection Head network to ONNX."""
+    try:
+        import tf2onnx
+    except ImportError:
+        return False
+    try:
+        inp = tf.keras.Input(shape=(in_dim,), dtype=tf.float32, name='feature_input')
+        out = head(inp, training=False)
+        head_model = tf.keras.Model(inputs=inp, outputs=out, name=head.name)
+        
+        spec = (tf.TensorSpec((None, in_dim), tf.float32, name='feature_input'),)
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        tf2onnx.convert.from_keras(head_model, input_signature=spec, opset=opset, output_path=save_path)
+        print(f'[ONNX Export] Saved projection head ONNX -> {save_path}')
+        return True
+    except Exception as e:
+        print(f'[ONNX Export Warning] Failed to export projection head to {save_path}: {e}')
+        return False
+
+
+# =============================================================================
+# 6. CORAL LOSS COMPUTATION
 # =============================================================================
 @tf.function
 def compute_covariance(features: tf.Tensor) -> tf.Tensor:
@@ -980,6 +1073,10 @@ def main():
     parser.add_argument('--lower-range', type=int, default=-1, choices=[-1, 0], help="Min-max scaling lower range")
     parser.add_argument('--standardize', action='store_true', default=False, help="Use sample-wise zero-mean unit-variance standardization instead of min-max scaling")
     parser.add_argument('--save-features', action='store_true', default=SAVE_FEATURES, help="Extract & save intermediate features")
+    parser.add_argument('--save-model', dest='save_onnx', action='store_true', default=True, help="Save trained model as .onnx and weights (default: True)")
+    parser.add_argument('--no-save-model', dest='save_onnx', action='store_false', help="Disable ONNX model and weight export")
+    parser.add_argument('--save-branched-onnx', action='store_true', default=True, help="Also export combined tree model with projection head branches to ONNX (default: True)")
+    parser.add_argument('--no-branched-onnx', dest='save_branched_onnx', action='store_false', help="Do not export branched tree ONNX model")
     parser.add_argument('--test-code', action='store_true', default=TEST_CODE, help="Fast sanity check")
     parser.add_argument('--no-gpu', action='store_true', help="Disable GPU execution")
 
@@ -1081,6 +1178,12 @@ def main():
     _, dummy_feats = model(dummy_x, training=False, return_features=True, selected_layers=selected_layers)
     for lyr, f_t in zip(selected_layers, dummy_feats):
         proj_heads[lyr](f_t, training=False)
+
+    best_val_score = float('inf')
+    best_epoch = 1
+    best_model_weights = model.get_weights()
+    best_proj_weights = {lyr: head.get_weights() for lyr, head in proj_heads.items()}
+
     history = {
         'train_loss': [],
         'train_est_loss': [],
@@ -1243,6 +1346,14 @@ def main():
             ssim_t_tr = compute_ssim_batch(pred_tgt_tr, H_perf_tgt[eval_sub_tgt_tr])
             ssim_t_val = compute_ssim_batch(pred_tgt_val, H_perf_tgt[idx_val_tgt])
 
+            # Checkpoint best validation model
+            val_criterion = nmse_s_val if args.only_source else nmse_t_val
+            if val_criterion < best_val_score:
+                best_val_score = val_criterion
+                best_epoch = epoch + 1
+                best_model_weights = model.get_weights()
+                best_proj_weights = {lyr: head.get_weights() for lyr, head in proj_heads.items()}
+
             history['eval_epochs'].append(epoch + 1)
             history['nmse_train_src_db'].append(nmse_s_tr)
             history['nmse_val_src_db'].append(nmse_s_val)
@@ -1260,13 +1371,69 @@ def main():
             history['ssim_val_tgt'].append(ssim_t_val)
 
             print(f"Epoch {epoch+1:03d}/{args.n_epochs:03d} | Loss: {avg_loss:.4f} (Est: {avg_est:.4f}, Proj-CORAL: {avg_coral:.4f}) | "
-                  f"Target NMSE: {nmse_t_val:.2f} dB (Src: {nmse_s_val:.2f} dB) | Target SSIM: {ssim_t_val:.4f}")
+                  f"Target NMSE: {nmse_t_val:.2f} dB (Src: {nmse_s_val:.2f} dB) | Best: {best_val_score:.2f} dB (Ep {best_epoch:03d})")
 
     total_time = time.perf_counter() - start_time
     print(f"\n[Done] Training completed in {total_time:.2f} seconds ({total_time / args.n_epochs:.3f} s/epoch).")
+    print(f"[Best Checkpoint] Best validation score: {best_val_score:.2f} dB achieved at Epoch {best_epoch:03d}.")
 
     # =========================================================================
-    # FINAL TEST EVALUATION & EXPORTS
+    # MODEL SAVING & ONNX EXPORT (Main Network + Optional Branched Tree)
+    # =========================================================================
+    if args.save_onnx:
+        print("\n" + "=" * 80)
+        print("                  EXPORTING ONNX MODELS & TRAINED WEIGHTS             ")
+        print("=" * 80)
+
+        # 1. Save Final Model (Weights + ONNX)
+        try:
+            final_w_path = os.path.join(output_dir, 'final_model.weights.h5')
+            model.save_weights(final_w_path)
+            print(f"[Save] Final main model weights -> {final_w_path}")
+        except Exception as e:
+            print(f"[Save Warning] Could not save final weights: {e}")
+
+        final_onnx_path = os.path.join(output_dir, 'final_net.onnx')
+        export_model_to_onnx(model, final_onnx_path, input_shape=(None, 88, 2))
+
+        if not args.only_source and proj_heads and args.save_branched_onnx:
+            final_branched_model = BranchedHA02Model(model, proj_heads, selected_layers)
+            final_branched_onnx_path = os.path.join(output_dir, 'final_net_with_pheads.onnx')
+            export_model_to_onnx(final_branched_model, final_branched_onnx_path, input_shape=(None, 88, 2))
+
+        # 2. Restore Best Validation Checkpoint and Export
+        if best_model_weights is not None:
+            print(f"\n[Model Checkpoint] Restoring best validation weights from Epoch {best_epoch:03d} ...")
+            model.set_weights(best_model_weights)
+            for lyr, head in proj_heads.items():
+                if lyr in best_proj_weights:
+                    head.set_weights(best_proj_weights[lyr])
+
+            try:
+                best_w_path = os.path.join(output_dir, 'best_model.weights.h5')
+                model.save_weights(best_w_path)
+                print(f"[Save] Best main model weights -> {best_w_path}")
+            except Exception as e:
+                print(f"[Save Warning] Could not save best weights: {e}")
+
+            # Export best_net.onnx (primary model for inference and MATLAB)
+            best_onnx_path = os.path.join(output_dir, 'best_net.onnx')
+            export_model_to_onnx(model, best_onnx_path, input_shape=(None, 88, 2))
+
+            # Export best_net_with_pheads.onnx (multi-output branched tree)
+            if not args.only_source and proj_heads and args.save_branched_onnx:
+                best_branched_model = BranchedHA02Model(model, proj_heads, selected_layers)
+                best_branched_onnx_path = os.path.join(output_dir, 'best_net_with_pheads.onnx')
+                export_model_to_onnx(best_branched_model, best_branched_onnx_path, input_shape=(None, 88, 2))
+                
+                # Also export individual projection head networks (lightweight .onnx)
+                for lyr, head in proj_heads.items():
+                    in_dim = PROJECTION_HEAD_CONFIG.get(lyr, {}).get('in_dim', 176)
+                    phead_onnx_path = os.path.join(output_dir, f"best_phead_{lyr}.onnx")
+                    export_projection_head_to_onnx(head, phead_onnx_path, in_dim=in_dim)
+
+    # =========================================================================
+    # FINAL TEST EVALUATION & EXPORTS (Evaluated on Best Checkpoint)
     # =========================================================================
     print("\n" + "=" * 80)
     print("                      FINAL TEST PERFORMANCE SUMMARY                  ")
@@ -1351,6 +1518,7 @@ def main():
             f.write(f"Normalization:        {norm_str}\n")
             f.write(f"CORAL Layers:         {selected_layers}\n")
             f.write(f"Projection Dim:       {args.proj_dim}\n")
+            f.write(f"Best Validation Epoch:{best_epoch} (Score: {best_val_score:.2f} dB)\n")
             f.write(f"Total Execution Time: {total_time:.1f} s\n\n")
 
             f.write("--- SOURCE DOMAIN TEST METRICS ---\n")
@@ -1391,7 +1559,9 @@ def main():
         'input_type': args.type,
         'standardize': args.standardize,
         'proj_dim': args.proj_dim,
-        'coral_layers': np.array(selected_layers)
+        'coral_layers': np.array(selected_layers),
+        'best_epoch': best_epoch,
+        'best_val_score': best_val_score
     }
     savemat(eval_path, eval_dict)
     print(f"[Save] Evaluation results -> {eval_path}")
