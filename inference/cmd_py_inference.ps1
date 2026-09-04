@@ -14,21 +14,20 @@ $datasetDir = "C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_
 
 # 2. Define root folder for trained models and the trained dataset parameter
 $modelRootDir = "C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\single_dataset"
-$trainedDataset = "DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps"
+$trainedDataset = "A100_2p18e9_600km_70deg_30kHz"
 
 # 3. List the models you want to run inference on
 # The script will search for directories named "${model}_${trainedDataset}" under $modelRootDir,
 # or fall back to "${model}" directly if the suffix is not used.
 $models = @(
-    "LI_DnCNN_AxialAttention",
+    "LI_DnCNN_Attention_standardize",
     "LI_DnCNN_AxialAttention_standardize",
-    "LI_DnCNN_CrossAttention",
     "LI_DnCNN_CrossAttention_standardize"
 )
 
 # 4. Define root folder for outputs and the folder to save results
 $outRootDir = "C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference"
-$outSaveFolderName = "DUR100__A100_2p18e9_600km_30kHz"
+$outSaveFolderName = "A100__DUR100_2p18e9_600km_30kHz"
 
 # Other common parameters
 $numSamples = "None"          # Limit number of samples (or "None" to process all)
@@ -54,6 +53,9 @@ for ($i = 0; $i -lt $models.Length; $i++) {
         continue
     }
     
+    # Resolve output directory for this specific model
+    $outDir = Join-Path $outParentDir $model
+
     # Determine inference script dynamically (LS models use sequence inference)
     $inferScript = "inference_onnx_grid.py"
     if ($model -like "LS_Attention*" -or $model -like "LS_*") {

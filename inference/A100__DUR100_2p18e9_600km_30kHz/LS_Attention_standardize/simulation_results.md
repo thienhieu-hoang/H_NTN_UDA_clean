@@ -1,7 +1,7 @@
 # NTN Inferred Channel Equalization & Performance Summary
 
 ## Target Batch Directory
-`C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference\A100__DUR100_2p18e9_600km_30kHz\LS_Attention_standardize`
+`C:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/inference/A100__DUR100_2p18e9_600km_30kHz/LS_Attention_standardize`
 
 ## BER Performance Table
 | SNR (dB) | LS + Linear Interpolation | LI+DnCNN inferred | MMSE Benchmark |

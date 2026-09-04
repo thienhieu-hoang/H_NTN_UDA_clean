@@ -1,0 +1,5 @@
+Folders loaded and plotted in this multi-model comparison:
+  - Legend Label: LI+cGAN Inferred
+    Source Path:  C:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/inference/A100__DUR100_2p18e9_600km_30kHz/LI_cGAN
+  - Legend Label: LI+cGAN Std Inferred
+    Source Path:  C:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/inference/A100__DUR100_2p18e9_600km_30kHz/LI_cGAN_standardize
