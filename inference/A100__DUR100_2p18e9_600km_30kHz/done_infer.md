@@ -1,12 +1,12 @@
-Inference completed successfully on 09/01/2026 12:17:58
+Inference completed successfully on 09/04/2026 09:56:28
 
 Folder:
 A100__DUR100_2p18e9_600km_30kHz
 
 Models:
-- LS_Attention
-- LS_Attention_standardize
+- LI_cGAN
+- LI_cGAN_standardize
 
 Labels:
-- LS+Attention Inferred
-- LS+Attention Std Inferred
+- LI+cGAN Inferred
+- LI+cGAN Std Inferred
