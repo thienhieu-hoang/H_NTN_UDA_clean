@@ -838,8 +838,8 @@ def main():
     parser.add_argument('--data-root', type=str, default='', help='Alias for --source-dir (single dataset mode fallback)')
     parser.add_argument('--save-dir', type=str, default=DEFAULT_SAVE_DIR, help='Directory to save outputs')
     parser.add_argument('--snr', type=int, default=DEFAULT_SNR, help='Channel SNR in dB')
-    parser.add_argument('--input-type', type=str, default=DEFAULT_INPUT_TYPE, choices=['li', 'prac', 'ls'], help='Input estimation type')
-    parser.add_argument('--epochs', type=int, default=DEFAULT_EPOCHS, help='Number of epochs')
+    parser.add_argument('--input-type', '--type', type=str, default=DEFAULT_INPUT_TYPE, choices=['li', 'prac', 'ls', 'LI', 'PRAC', 'LS'], help='Input estimation type')
+    parser.add_argument('--epochs', '--n-epochs', type=int, default=DEFAULT_EPOCHS, help='Number of epochs')
     parser.add_argument('--batch-size', type=int, default=DEFAULT_BATCH_SIZE, help='Batch size')
     parser.add_argument('--lr', type=float, default=DEFAULT_LR, help='Learning rate')
     parser.add_argument('--domain-weight', type=float, default=DEFAULT_DOMAIN_WEIGHT, help='CORAL loss weight (lambda)')
@@ -861,6 +861,7 @@ def main():
     parser.add_argument('--test-code', action='store_true', help='Quick smoke test mode (5 epochs on small subset)')
 
     args = parser.parse_args()
+    args.input_type = args.input_type.lower()
 
     # Fallback alias support
     if args.data_root:
@@ -872,6 +873,11 @@ def main():
     for item in args.coral_layers:
         for sub in str(item).replace(',', ' ').split():
             sub_clean = sub.strip().lower()
+            # Normalize layer aliases: 'layer3' -> 'block_3', 'layer_3' -> 'block_3', 'block3' -> 'block_3'
+            if sub_clean.startswith('layer'):
+                sub_clean = 'block_' + sub_clean.replace('layer', '').lstrip('_')
+            elif sub_clean.startswith('block') and not sub_clean.startswith('block_'):
+                sub_clean = 'block_' + sub_clean.replace('block', '').lstrip('_')
             if sub_clean and sub_clean not in selected_layers:
                 selected_layers.append(sub_clean)
 
