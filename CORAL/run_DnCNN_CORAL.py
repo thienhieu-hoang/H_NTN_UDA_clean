@@ -1209,6 +1209,8 @@ def main():
     # 6. Save Extracted Features MAT if requested
     if args.save_features and saved_features:
         saved_features['selected_layers'] = np.array(selected_layers)
+        saved_features['train_indices_src'] = idx_train_src
+        saved_features['train_indices_tgt'] = idx_train_tgt
         savemat(os.path.join(output_dir, 'extracted_features.mat'), saved_features, do_compression=True)
         print(f"[Save] Exported extracted features -> {os.path.join(output_dir, 'extracted_features.mat')}")
 

@@ -1,8 +1,8 @@
 # Domain Adaptation Workflow for DnCNN Model (OpenNTN)
 
 This document describes the **Unsupervised Domain Adaptation (UDA)** workflow, architectural principles, and mathematical formulations for the **DnCNN (CNNGenerator)** deep learning models applied to 5G Non-Terrestrial Network (NTN) channel estimation, covering:
-1. **Direct Multi-Layer CORAL Alignment**: [`train_CORAL_DnCNN.py`](file:///c:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/CORAL/train_CORAL_DnCNN.py)
-2. **Projection-Head CORAL Alignment**: [`train_CORALpHead_DnCNN.py`](file:///c:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/CORAL/train_CORALpHead_DnCNN.py)
+1. **Direct Multi-Layer CORAL Alignment**: [`run_DnCNN_CORAL.py`](file:///c:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/CORAL/run_DnCNN_CORAL.py)
+2. **Projection-Head CORAL Alignment**: [`run_DnCNN_pHeadCORAL.py`](file:///c:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/CORAL/run_DnCNN_pHeadCORAL.py)
 
 ---
 
@@ -107,9 +107,9 @@ SPATIAL GLOBAL AVERAGE POOLING (GAP)
 
 ---
 
-## 4. Method 1: Direct CORAL Alignment (`train_CORAL_DnCNN.py`)
+## 4. Method 1: Direct CORAL Alignment (`run_DnCNN_CORAL.py`)
 
-In [`train_CORAL_DnCNN.py`](file:///c:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/CORAL/train_CORAL_DnCNN.py), the domain covariance alignment is applied directly to the pooled feature vectors $\bar{\mathbf{Z}}^{(k)}$:
+In [`run_DnCNN_CORAL.py`](file:///c:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/CORAL/run_DnCNN_CORAL.py), the domain covariance alignment is applied directly to the pooled feature vectors $\bar{\mathbf{Z}}^{(k)}$:
 
 ```
 [Source Batch] ──► DnCNN ──► Z_src [B, 132, 14, C_k] ──► Spatial GAP ──► Z_pool_src [B, C_k] ──┐
@@ -121,9 +121,9 @@ $$\mathcal{L}_{\text{CORAL}} = \frac{1}{|\mathcal{K}|} \sum_{k \in \mathcal{K}} 
 
 ---
 
-## 5. Method 2: Dedicated Projection-Head Network (`train_CORALpHead_DnCNN.py`)
+## 5. Method 2: Dedicated Projection-Head Network (`run_DnCNN_pHeadCORAL.py`)
 
-In [`train_CORALpHead_DnCNN.py`](file:///c:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/CORAL/train_CORALpHead_DnCNN.py), each selected intermediate block is connected to a **Dedicated Non-Linear Projection Head**:
+In [`run_DnCNN_pHeadCORAL.py`](file:///c:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/CORAL/run_DnCNN_pHeadCORAL.py), each selected intermediate block is connected to a **Dedicated Non-Linear Projection Head**:
 
 ```
 [Intermediate Block Feature: [B, 132, 14, C_k]]
@@ -196,7 +196,7 @@ where $\lambda_{\text{CORAL}} = 0.5$ (default).
 
 ## 7. Comparison: Direct CORAL vs Projection-Head CORAL
 
-| Feature | Direct CORAL (`train_CORAL_DnCNN.py`) | Projection-Head CORAL (`train_CORALpHead_DnCNN.py`) |
+| Feature | Direct CORAL (`run_DnCNN_CORAL.py`) | Projection-Head CORAL (`run_DnCNN_pHeadCORAL.py`) |
 | :--- | :--- | :--- |
 | **Alignment Target** | Raw pooled features $\bar{\mathbf{Z}} \in \mathbb{R}^{B \times C_k}$ | Non-linear embeddings $\mathbf{P} \in \mathbb{R}^{B \times 64}$ |
 | **Subspace Mapping** | Linear identity | 2-layer MLP (Dense $\to$ LayerNorm $\to$ GeLU $\to$ Dense) |
@@ -212,26 +212,29 @@ where $\lambda_{\text{CORAL}} = 0.5$ (default).
 ### Running Experiments
 ```bash
 # 1. Direct CORAL UDA on DnCNN (4 residual blocks)
-python train_CORAL_DnCNN.py --snr 5 --coral-layers block_2 block_3 --n-blocks 4 --domain-weight 0.5 --save-features
+python run_DnCNN_CORAL.py --snr 5 --coral-layers block_2 block_3 --n-blocks 4 --domain-weight 0.5 --save-features
 
 # 2. Projection-Head CORAL UDA on DnCNN (4 residual blocks, proj_dim = 64)
-python train_CORALpHead_DnCNN.py --snr 5 --coral-layers block_2 block_3 --n-blocks 4 --proj-dim 64 --domain-weight 0.5 --save-features
+python run_DnCNN_pHeadCORAL.py --snr 5 --coral-layers block_2 block_3 --n-blocks 4 --proj-dim 64 --domain-weight 0.5 --save-features
 
 # 3. Direct CORAL UDA on DnCNN (6 residual blocks)
-python train_CORAL_DnCNN.py --snr 5 --coral-layers block_2 block_3 --n-blocks 6 --domain-weight 0.5 --save-features
+python run_DnCNN_CORAL.py --snr 5 --coral-layers block_2 block_3 --n-blocks 6 --domain-weight 0.5 --save-features
 
 # 4. Source-Only Baseline (no domain adaptation)
-python train_CORAL_DnCNN.py --snr 5 --only-source
+python run_DnCNN_CORAL.py --snr 5 --only-source
 
 # 5. Quick Sanity Code Test (5 epochs on subset)
-python train_CORALpHead_DnCNN.py --test-code --snr 5 --save-features
+python run_DnCNN_pHeadCORAL.py --test-code --snr 5 --save-features
 ```
 
 ### Generated Artifacts in `results/`
+* **`best_net.onnx` & `final_net.onnx`**: Single-output primary residual channel estimator exported at the best validation epoch and final epoch (ready for MATLAB ONNX import & `inference_onnx_grid.py`).
+* **`best_net_with_pheads.onnx` / `best_net_with_features.onnx`**: Multi-output branched tree models combining the main estimator and aligned layer representations.
+* **`best_model.weights.h5` & `final_model.weights.h5`**: Keras model checkpoint weights.
 * **`testChannel_source.mat` & `testChannel_target.mat`**: Held-out test channels for MATLAB BER simulations (including ground truth, input, LI benchmark, and model output).
 * **`sample_reconstructions.mat`**: Exact channel grid frames across 4 splits (Source Train, Source Test, Target Train, Target Test) for MATLAB replotting.
 * **`training_history.mat`**: Numerical progression across all epochs (Total Loss, Est Loss, CORAL Loss, 4-way NMSE dB, MSE, and SSIM).
-* **`evaluation_results.mat`**: Summary scalar metrics on test splits.
+* **`evaluation_results.mat`**: Summary scalar metrics on test splits (including `best_epoch` and `best_val_score`).
 * **`final_epoch.txt`**: Consolidated text evaluation report.
 * **`extracted_features.mat`**: Raw and projected activations captured at `begin`, `mid`, and `last` training checkpoints with `train_indices_src` and `train_indices_tgt`.
 * **PDF Figures**:
