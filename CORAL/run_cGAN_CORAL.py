@@ -833,6 +833,103 @@ def save_test_channel_mat(mat_dict, test_indices, H_pred_test, save_filepath, sn
     print(f"[Save] Exported test MAT file -> {save_filepath}")
 
 
+# ============================================================================
+# MODEL WRAPPERS & ONNX EXPORT HELPERS
+# ============================================================================
+
+class Pix2PixGeneratorModel(tf.keras.Model):
+    """
+    Inference wrapper for Pix2PixGenerator that outputs strictly the single primary
+    generated channel tensor [B, 132, 14, 2], stripping away internal intermediate
+    feature outputs for clean ONNX export and MATLAB / inference_onnx_grid.py compatibility.
+    """
+    def __init__(self, generator: Pix2PixGenerator, **kwargs):
+        super().__init__(**kwargs)
+        self.generator = generator
+
+    def call(self, inputs, training=False):
+        u4, _ = self.generator(inputs, training=training)
+        return u4
+
+
+class BranchedcGANModel(tf.keras.Model):
+    """
+    Multi-output branched tree model combining the main cGAN generator estimator
+    along with the aligned intermediate feature representations (with Spatial GAP).
+    Output: tuple of [output_grid, feat_d1, feat_d2, ...]
+    """
+    def __init__(self, generator: Pix2PixGenerator, selected_layers: list, **kwargs):
+        super().__init__(**kwargs)
+        self.generator = generator
+        self.selected_layers = list(selected_layers)
+
+    def call(self, inputs, training=False):
+        u4, feat_list = self.generator(inputs, training=training, return_features=True)
+        outputs = [u4]
+        for f_t in feat_list:
+            if len(f_t.shape) == 4:
+                outputs.append(tf.reduce_mean(f_t, axis=[1, 2]))
+            else:
+                outputs.append(f_t)
+        return tuple(outputs)
+
+
+def export_model_to_onnx(model: tf.keras.Model, save_path: str,
+                         input_shape=(1, 132, 14, 2), opset: int = 13,
+                         as_nchw: bool = True):
+    """
+    Export Keras generator model to ONNX format using tf2onnx.
+    Supports optional NCHW input conversion for MATLAB compatibility and onnxsim simplification.
+    """
+    try:
+        import tf2onnx
+    except ImportError:
+        print('[ONNX] Installing tf2onnx package for ONNX model export ...')
+        import subprocess
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'tf2onnx'])
+        import tf2onnx
+
+    try:
+        spec = (tf.TensorSpec(input_shape, tf.float32, name='input_channel'),)
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+
+        nchw_args = ['input_channel'] if as_nchw else None
+        try:
+            model_proto, _ = tf2onnx.convert.from_keras(
+                model, 
+                input_signature=spec, 
+                inputs_as_nchw=nchw_args,
+                opset=opset, 
+                output_path=save_path
+            )
+        except Exception as nchw_err:
+            model_proto, _ = tf2onnx.convert.from_keras(
+                model, 
+                input_signature=spec, 
+                opset=opset, 
+                output_path=save_path
+            )
+
+        print(f'[ONNX Export] Successfully saved ONNX model -> {save_path}')
+
+        # Optionally simplify ONNX graph using onnxsim for MATLAB compatibility
+        try:
+            from onnxsim import simplify
+            import onnx
+            model_onnx = onnx.load(save_path)
+            model_simp, check = simplify(model_onnx)
+            if check:
+                onnx.save(model_simp, save_path)
+                print(f'[ONNX Simplifier] Optimized and simplified ONNX graph -> {save_path}')
+        except Exception:
+            pass
+
+        return True
+    except Exception as e:
+        print(f'[ONNX Export Error] Failed to export {save_path}: {e}')
+        return False
+
+
 def plot_loss_curves(history: dict, save_dir: str):
     """Plot training loss curves across epochs and save to PDF."""
     if not history.get('train_loss'):
@@ -1029,7 +1126,7 @@ def main():
     )
     parser.add_argument('--train-frac', type=float, default=DEFAULT_TRAIN_FRAC, help="Fraction of data for training")
     parser.add_argument('--val-frac', type=float, default=DEFAULT_VAL_FRAC, help="Fraction of data for validation")
-    parser.add_argument('--n-epochs', type=int, default=N_EPOCHS, help="Number of training epochs")
+    parser.add_argument('--n-epochs', '--epochs', dest='n_epochs', type=int, default=N_EPOCHS, help="Number of training epochs")
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE, help="Batch size")
     parser.add_argument('--test-code', action='store_true', default=TEST_CODE, help="Run with subset of data for testing")
     parser.add_argument('--lower-range', type=float, default=-1.0, choices=[0.0, -1.0], help="Scaling range for minmax ([-1, 1] or [0, 1])")
@@ -1040,6 +1137,10 @@ def main():
     parser.add_argument('--temporal-weight', type=float, default=0.02, help="Temporal smoothness weight")
     parser.add_argument('--frequency-weight', type=float, default=0.1, help="Frequency smoothness weight")
     parser.add_argument('--save-features', action='store_true', default=SAVE_FEATURES, help="Extract and save intermediate features at begin, mid, and last epoch")
+    parser.add_argument('--save-model', dest='save_onnx', action='store_true', default=True, help="Save trained generator as .onnx and weights (default: True)")
+    parser.add_argument('--no-save-model', dest='save_onnx', action='store_false', help="Disable ONNX model and weight export")
+    parser.add_argument('--save-branched-onnx', action='store_true', default=True, help="Also export combined tree model with aligned layer feature branches to ONNX (default: True)")
+    parser.add_argument('--no-branched-onnx', dest='save_branched_onnx', action='store_false', help="Do not export branched tree ONNX model")
     parser.add_argument('--no-gpu', action='store_true', help="Disable GPU execution")
 
     args = parser.parse_args()
@@ -1222,6 +1323,12 @@ def main():
     start_time = time.perf_counter()
     print(f"\n[Train] Starting GPU-Accelerated cGAN Training for {args.n_epochs} Epochs ...")
 
+    # Validation checkpoint tracking
+    best_val_score = float('inf')
+    best_epoch = -1
+    best_gen_weights = None
+    best_disc_weights = None
+
     # Main Training Loop
     for epoch in range(args.n_epochs):
         ep_g_loss = 0.0
@@ -1295,6 +1402,14 @@ def main():
             _, m_t_tr = infer_and_evaluate_fast(generator, eval_sub_tgt_tr, is_residual=args.residual, lower_range=args.lower_range, standardize=args.standardize)
             _, m_t_val = infer_and_evaluate_fast(generator, ds_tgt_val, is_residual=args.residual, lower_range=args.lower_range, standardize=args.standardize)
 
+            # Checkpoint best validation model
+            val_criterion = m_s_val['nmse_db'] if args.only_source else m_t_val['nmse_db']
+            if val_criterion < best_val_score:
+                best_val_score = val_criterion
+                best_epoch = epoch + 1
+                best_gen_weights = generator.get_weights()
+                best_disc_weights = discriminator.get_weights()
+
             history['eval_epochs'].append(epoch + 1)
             history['nmse_train_src_db'].append(m_s_tr['nmse_db'])
             history['nmse_val_src_db'].append(m_s_val['nmse_db'])
@@ -1312,13 +1427,71 @@ def main():
             history['ssim_val_tgt'].append(m_t_val['ssim'])
 
             print(f"Epoch {epoch+1:03d}/{args.n_epochs:03d} | G Loss: {avg_g_loss:.4f} (Est: {avg_est_loss:.4f}, CORAL: {avg_coral_loss:.4f}) | "
-                  f"Target NMSE: {m_t_val['nmse_db']:.2f} dB (Src: {m_s_val['nmse_db']:.2f} dB) | Target SSIM: {m_t_val['ssim']:.4f}")
+                  f"Target NMSE: {m_t_val['nmse_db']:.2f} dB (Src: {m_s_val['nmse_db']:.2f} dB) | Best: {best_val_score:.2f} dB (Ep {best_epoch:03d})")
 
     total_time = time.perf_counter() - start_time
     print(f"\n[Done] Training completed in {total_time:.2f} seconds ({total_time / args.n_epochs:.3f} s/epoch).")
+    print(f"[Best Checkpoint] Best validation score: {best_val_score:.2f} dB achieved at Epoch {best_epoch:03d}.")
 
     # ============================================================================
-    # FINAL TEST EVALUATION & EXPORTS
+    # MODEL SAVING & ONNX EXPORT (Generator + Optional Branched Tree)
+    # ============================================================================
+    if args.save_onnx:
+        print("\n" + "=" * 80)
+        print("                  EXPORTING ONNX MODELS & TRAINED WEIGHTS             ")
+        print("=" * 80)
+
+        # 1. Save Final Model (Weights + ONNX)
+        try:
+            final_gw_path = os.path.join(output_dir, 'final_generator.weights.h5')
+            generator.save_weights(final_gw_path)
+            print(f"[Save] Final generator weights -> {final_gw_path}")
+            final_dw_path = os.path.join(output_dir, 'final_discriminator.weights.h5')
+            discriminator.save_weights(final_dw_path)
+            print(f"[Save] Final discriminator weights -> {final_dw_path}")
+        except Exception as e:
+            print(f"[Save Warning] Could not save final weights: {e}")
+
+        # Export final_net.onnx (main generator)
+        final_single_model = Pix2PixGeneratorModel(generator)
+        final_onnx_path = os.path.join(output_dir, 'final_net.onnx')
+        export_model_to_onnx(final_single_model, final_onnx_path, input_shape=(1, 132, 14, 2))
+
+        if not args.only_source and selected_layers and args.save_branched_onnx:
+            final_branched_model = BranchedcGANModel(generator, selected_layers)
+            final_branched_onnx_path = os.path.join(output_dir, 'final_net_with_features.onnx')
+            export_model_to_onnx(final_branched_model, final_branched_onnx_path, input_shape=(1, 132, 14, 2), as_nchw=False)
+
+        # 2. Restore Best Validation Checkpoint and Export
+        if best_gen_weights is not None:
+            print(f"\n[Model Checkpoint] Restoring best validation weights from Epoch {best_epoch:03d} ...")
+            generator.set_weights(best_gen_weights)
+            if best_disc_weights is not None:
+                discriminator.set_weights(best_disc_weights)
+
+            try:
+                best_gw_path = os.path.join(output_dir, 'best_generator.weights.h5')
+                generator.save_weights(best_gw_path)
+                print(f"[Save] Best generator weights -> {best_gw_path}")
+                best_dw_path = os.path.join(output_dir, 'best_discriminator.weights.h5')
+                discriminator.save_weights(best_dw_path)
+                print(f"[Save] Best discriminator weights -> {best_dw_path}")
+            except Exception as e:
+                print(f"[Save Warning] Could not save best weights: {e}")
+
+            # Export best_net.onnx (primary model for inference and MATLAB)
+            best_single_model = Pix2PixGeneratorModel(generator)
+            best_onnx_path = os.path.join(output_dir, 'best_net.onnx')
+            export_model_to_onnx(best_single_model, best_onnx_path, input_shape=(1, 132, 14, 2))
+
+            # Export best_net_with_features.onnx (multi-output branched tree)
+            if not args.only_source and selected_layers and args.save_branched_onnx:
+                best_branched_model = BranchedcGANModel(generator, selected_layers)
+                best_branched_onnx_path = os.path.join(output_dir, 'best_net_with_features.onnx')
+                export_model_to_onnx(best_branched_model, best_branched_onnx_path, input_shape=(1, 132, 14, 2), as_nchw=False)
+
+    # ============================================================================
+    # FINAL TEST EVALUATION & EXPORTS (Evaluated on Best Checkpoint)
     # ============================================================================
     print("\n" + "=" * 80)
     print("                      FINAL TEST PERFORMANCE SUMMARY                  ")
@@ -1393,6 +1566,7 @@ def main():
             f.write(f"Normalization:        {norm_str}\n")
             f.write(f"CORAL Layers:         {selected_layers}\n")
             f.write(f"Residual Mode:        {args.residual}\n")
+            f.write(f"Best Validation Epoch:{best_epoch} (Score: {best_val_score:.2f} dB)\n")
             f.write(f"Total Execution Time: {total_time:.1f} s\n\n")
 
             f.write("--- SOURCE DOMAIN TEST METRICS ---\n")
@@ -1432,7 +1606,9 @@ def main():
         'input_type': args.type,
         'residual': args.residual,
         'standardize': args.standardize,
-        'coral_layers': np.array(selected_layers)
+        'coral_layers': np.array(selected_layers),
+        'best_epoch': best_epoch,
+        'best_val_score': best_val_score
     }
     eval_path = os.path.join(output_dir, 'evaluation_results.mat')
     savemat(eval_path, eval_dict)

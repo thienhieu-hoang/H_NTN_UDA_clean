@@ -256,7 +256,6 @@ end
 %% Domain-specific evaluation function
 function save_struct = evaluate_domain(batch_folder, snr_subfolders, SNRdB_sorted, domain, labelname)
     num_snr = length(SNRdB_sorted);
-    domain_title = [upper(domain(1)), domain(2:end)];
 
     % 5G NR Carrier & PDSCH Configuration (30 kHz SCS, 11 RBs = 132 subcarriers, 14 symbols)
     carrier = nrCarrierConfig;
