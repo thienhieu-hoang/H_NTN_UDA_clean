@@ -45,9 +45,9 @@ function results = syn_metrics_withBER(batch_folder, labelname, extractLayer)
     end
 
     % Default configuration fallbacks
-    batch_folder_ = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\CORAL\A100__DUR100_2p18e9_600km_30kHz\LS_Attention_standardize';
-    labelname_ = 'LS+Attention(Std) Inferred';
-    extractLayer_ = {'layer1', 'layer1_layer2'};
+    batch_folder_ = 'C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\CORAL\A100__DUR100_2p18e9_600km_30kHz\LS_Attention_pHead_standardize';
+    labelname_ = 'LS+Transformer CORAL pHead';
+    extractLayer_ = {'layer1_layer2', 'layer1'};  %
 
     if nargin < 1 || isempty(batch_folder)
         batch_folder = batch_folder_;
