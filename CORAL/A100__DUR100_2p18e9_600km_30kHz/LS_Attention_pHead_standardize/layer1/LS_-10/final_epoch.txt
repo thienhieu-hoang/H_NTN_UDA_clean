@@ -1,0 +1,19 @@
+=== FINAL EPOCH EVALUATION RESULTS ===
+SNR (dB):             -10
+Input Type:           LS
+Domain Adaptation:    Projection Head CORAL UDA
+Normalization:        Standardize (Zero-Mean, Unit-Var)
+CORAL Layers:         ['layer1']
+Projection Dim:       64
+Best Validation Epoch:5 (Score: -6.03 dB)
+Total Execution Time: 268.5 s
+
+--- SOURCE DOMAIN TEST METRICS ---
+Model Output MMSE:    8.199560e-17
+Model Output NMSE:    2.957380e-01 (-5.29 dB)
+Model Output SSIM:    0.1704
+
+--- TARGET DOMAIN TEST METRICS ---
+Model Output MMSE:    7.158079e-20
+Model Output NMSE:    2.846983e-01 (-5.46 dB)
+Model Output SSIM:    0.1954
