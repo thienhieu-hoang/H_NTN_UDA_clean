@@ -653,6 +653,104 @@ def compute_ssim_batch(H_pred: np.ndarray, H_true: np.ndarray) -> float:
         ssim_list.append(float(s.numpy()[0]))
     return float(np.mean(ssim_list))
 
+def save_channel_plots_pdf(H_perf_sample: np.ndarray,
+                           H_in_sample: np.ndarray,
+                           H_pred_sample: np.ndarray,
+                           pilot_rows: np.ndarray,
+                           pilot_cols: np.ndarray,
+                           input_type: str, save_dir: str,
+                           prefix: str = 'test'):
+    try:
+        import matplotlib.pyplot as plt
+        os.makedirs(save_dir, exist_ok=True)
+
+        # 1. Perfect Reference Channel
+        fig, ax = plt.subplots(figsize=(8, 6))
+        im = ax.imshow(H_perf_sample.real, aspect='auto', cmap='viridis')
+        fig.colorbar(im, ax=ax)
+        ax.set_title(f'Perfect Reference Channel (Real Part) - {prefix.capitalize()} Sample 1', fontsize=14)
+        ax.set_xlabel('Subcarrier Index' if H_perf_sample.shape[0] == 132 else 'Symbol Index', fontsize=12)
+        ax.set_ylabel('Symbol Index' if H_perf_sample.shape[0] == 132 else 'Subcarrier Index', fontsize=12)
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, f'H_perfect_{prefix}_sample1.pdf'), format='pdf')
+        plt.close(fig)
+
+        # 2. Sparse Input Pilots
+        H_in_grid = np.zeros(H_perf_sample.shape, dtype=np.complex64)
+        H_in_grid[pilot_rows, pilot_cols] = H_in_sample
+        fig, ax = plt.subplots(figsize=(8, 6))
+        im = ax.imshow(H_in_grid.real, aspect='auto', cmap='viridis')
+        fig.colorbar(im, ax=ax)
+        ax.set_title(f'Sparse Input Pilots H_{input_type} (Real Part) - {prefix.capitalize()} Sample 1', fontsize=14)
+        ax.set_xlabel('Subcarrier Index' if H_perf_sample.shape[0] == 132 else 'Symbol Index', fontsize=12)
+        ax.set_ylabel('Symbol Index' if H_perf_sample.shape[0] == 132 else 'Subcarrier Index', fontsize=12)
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, f'H_{input_type}_{prefix}_sample1.pdf'), format='pdf')
+        plt.close(fig)
+
+        # 3. Model Output
+        fig, ax = plt.subplots(figsize=(8, 6))
+        im = ax.imshow(H_pred_sample.real, aspect='auto', cmap='viridis')
+        fig.colorbar(im, ax=ax)
+        ax.set_title(f'HA02 DualDomain Output H_{input_type}_attention (Real Part) - {prefix.capitalize()} Sample 1', fontsize=14)
+        ax.set_xlabel('Subcarrier Index' if H_perf_sample.shape[0] == 132 else 'Symbol Index', fontsize=12)
+        ax.set_ylabel('Symbol Index' if H_perf_sample.shape[0] == 132 else 'Subcarrier Index', fontsize=12)
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, f'H_{input_type}_attention_{prefix}_sample1.pdf'), format='pdf')
+        plt.close(fig)
+
+        print(f'[PDF Export] {prefix.capitalize()} channel grid heatmaps saved to: {save_dir}')
+    except Exception as e:
+        print(f'[PDF Export Warning] Failed to export {prefix} channel heatmaps: {e}')
+
+def save_loss_plot_pdf(history: dict, save_dir: str):
+    try:
+        import matplotlib.pyplot as plt
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Loss Plot
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.plot(history['train_loss'], label='Train Total Loss', color='blue')
+        ax.plot(history['val_loss'], label='Val Total Loss', color='red')
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('Loss', fontsize=12)
+        ax.set_title('Training History - Loss', fontsize=14)
+        ax.grid(True, linestyle='--', alpha=0.5)
+        ax.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, 'loss_total.pdf'), format='pdf')
+        plt.close(fig)
+
+        # MSE Plot
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.plot(history['train_mse'], label='Train MSE', color='blue')
+        ax.plot(history['val_mse'], label='Val MSE', color='red')
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('MSE', fontsize=12)
+        ax.set_title('Training History - MSE', fontsize=14)
+        ax.grid(True, linestyle='--', alpha=0.5)
+        ax.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, 'loss_mse.pdf'), format='pdf')
+        plt.close(fig)
+
+        # SSIM Plot
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.plot(history['train_ssim'], label='Train SSIM Loss', color='blue')
+        ax.plot(history['val_ssim'], label='Val SSIM Loss', color='red')
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('1 - SSIM', fontsize=12)
+        ax.set_title('Training History - SSIM Loss', fontsize=14)
+        ax.grid(True, linestyle='--', alpha=0.5)
+        ax.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, 'loss_ssim.pdf'), format='pdf')
+        plt.close(fig)
+
+        print(f'[PDF Export] Loss history plots saved to: {save_dir}')
+    except Exception as e:
+        print(f'[PDF Export Warning] Failed to export loss history plots: {e}')
+
 @tf.function
 def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim_weight, 
                 use_huber=False, huber_delta=1.0, standardize=False):
@@ -762,6 +860,11 @@ def main():
     H_perfect, H_input_pilots, H_li_benchmark_grid, mat_dict, H_perfect_ori = load_mat_data(mat_path, args.input_type)
     N = H_perfect.shape[0]
 
+    pilot_cols = np.array(mat_dict['pilot_cols']).squeeze() - 1
+    pilot_rows = np.array(mat_dict['pilot_rows']).squeeze() - 1
+    if H_perfect_ori is None:
+        H_perfect_ori = H_perfect
+
     idx_train, idx_val, idx_test = split_indices(N, args.train_frac, args.val_frac)
 
     if args.test_code:
@@ -796,6 +899,7 @@ def main():
     print(f'[Train] {args.epochs} epochs  |  {n_train_batches} batches/epoch')
     use_huber = (args.loss_type == 'huber')
     huber_delta = tf.constant(args.huber_delta, dtype=tf.float32)
+    t_start = time.perf_counter()
 
     for epoch in range(args.epochs):
         idx_e = np.random.default_rng(epoch).permutation(idx_train)
@@ -876,14 +980,227 @@ def main():
     if args.save_model:
         export_model_to_onnx(model, os.path.join(save_dir, 'final_model.onnx'), (1, H_input_pilots.shape[1], 2))
 
-    # Evaluate on test split
-    print('[Test] Evaluating final model on test split ...')
-    h_p_test = H_perfect[idx_test]
-    h_i_test = H_input_pilots[idx_test]
-    H_pred_test = infer_channel(model, h_p_test, h_i_test, batch_size=args.batch_size, lower_range=lower_range, standardize=args.standardize)
-    test_nmse = compute_nmse(H_pred_test, h_p_test)
-    test_nmse_db = compute_nmse_db(H_pred_test, h_p_test)
-    print(f'[Test Results] NMSE: {test_nmse:.6f} | NMSE (dB): {test_nmse_db:.2f} dB')
+    # Save Loss Plots
+    save_loss_plot_pdf(history, os.path.join(save_dir))
+
+    # Final Evaluation (Validation + Test sets)
+    print('\n[Evaluation] Running final inference on validation & test sets...')
+    H_pred_train = infer_channel(model, H_perfect[idx_train], H_input_pilots[idx_train], args.batch_size, lower_range, standardize=args.standardize)
+    H_pred_val   = infer_channel(model, H_perfect[idx_val], H_input_pilots[idx_val], args.batch_size, lower_range, standardize=args.standardize)
+    H_pred_test  = infer_channel(model, H_perfect[idx_test], H_input_pilots[idx_test], args.batch_size, lower_range, standardize=args.standardize)
+
+    # Compute final metrics
+    mmse_train = compute_mmse(H_pred_train, H_perfect[idx_train])
+    nmse_train = compute_nmse(H_pred_train, H_perfect[idx_train])
+    nmse_train_db = compute_nmse_db(H_pred_train, H_perfect[idx_train])
+    ssim_train = compute_ssim_batch(H_pred_train, H_perfect[idx_train])
+
+    mmse_li_benchmark_train = compute_mmse(H_li_benchmark_grid[idx_train], H_perfect[idx_train])
+    nmse_li_benchmark_train = compute_nmse(H_li_benchmark_grid[idx_train], H_perfect[idx_train])
+    nmse_li_benchmark_train_db = compute_nmse_db(H_li_benchmark_grid[idx_train], H_perfect[idx_train])
+    ssim_li_benchmark_train = compute_ssim_batch(H_li_benchmark_grid[idx_train], H_perfect[idx_train])
+
+    mmse_val = compute_mmse(H_pred_val, H_perfect[idx_val])
+    nmse_val = compute_nmse(H_pred_val, H_perfect[idx_val])
+    nmse_val_db = compute_nmse_db(H_pred_val, H_perfect[idx_val])
+    ssim_val = compute_ssim_batch(H_pred_val, H_perfect[idx_val])
+
+    mmse_li_benchmark_val = compute_mmse(H_li_benchmark_grid[idx_val], H_perfect[idx_val])
+    nmse_li_benchmark_val = compute_nmse(H_li_benchmark_grid[idx_val], H_perfect[idx_val])
+    nmse_li_benchmark_val_db = compute_nmse_db(H_li_benchmark_grid[idx_val], H_perfect[idx_val])
+    ssim_li_benchmark_val = compute_ssim_batch(H_li_benchmark_grid[idx_val], H_perfect[idx_val])
+
+    mmse_test = compute_mmse(H_pred_test, H_perfect[idx_test])
+    nmse_test = compute_nmse(H_pred_test, H_perfect[idx_test])
+    nmse_test_db = compute_nmse_db(H_pred_test, H_perfect[idx_test])
+    ssim_test = compute_ssim_batch(H_pred_test, H_perfect[idx_test])
+
+    mmse_li_benchmark_test = compute_mmse(H_li_benchmark_grid[idx_test], H_perfect[idx_test])
+    nmse_li_benchmark_test = compute_nmse(H_li_benchmark_grid[idx_test], H_perfect[idx_test])
+    nmse_li_benchmark_test_db = compute_nmse_db(H_li_benchmark_grid[idx_test], H_perfect[idx_test])
+    ssim_li_benchmark_test = compute_ssim_batch(H_li_benchmark_grid[idx_test], H_perfect[idx_test])
+
+    # ── LMMSE Baseline Estimation ─────────────────────────────────────────────
+    print('\n' + '-' * 58)
+    print('[LMMSE] Calculating LMMSE baseline estimated channel...')
+    has_lmmse = False
+    try:
+        H_perfect_pilots = H_perfect[:, pilot_rows, pilot_cols]
+        H_perfect_vec = H_perfect.reshape(N, -1)
+        
+        # Complex covariance/correlation matrices
+        R_HP = np.matmul(H_perfect_vec.transpose(1, 0).conj(), H_perfect_pilots) / N
+        R_PP = np.matmul(H_perfect_pilots.transpose(1, 0).conj(), H_perfect_pilots) / N
+        
+        noise_var = float(np.mean(np.abs(H_input_pilots - H_perfect_pilots) ** 2))
+        
+        C = R_PP + noise_var * np.eye(R_PP.shape[0], dtype=np.complex128)
+        inv_C = np.linalg.inv(C)
+        W = np.matmul(R_HP, inv_C)
+        
+        H_lmmse_train = np.matmul(H_input_pilots[idx_train], W.T).reshape(-1, 132, 14)
+        H_lmmse_val = np.matmul(H_input_pilots[idx_val], W.T).reshape(-1, 132, 14)
+        H_lmmse_test = np.matmul(H_input_pilots[idx_test], W.T).reshape(-1, 132, 14)
+        
+        mmse_lmmse_train = compute_mmse(H_lmmse_train, H_perfect[idx_train])
+        nmse_lmmse_train = compute_nmse(H_lmmse_train, H_perfect[idx_train])
+        nmse_db_lmmse_train = 10.0 * np.log10(nmse_lmmse_train + 1e-30)
+        ssim_lmmse_train = compute_ssim_batch(H_lmmse_train, H_perfect[idx_train])
+        
+        mmse_lmmse_val = compute_mmse(H_lmmse_val, H_perfect[idx_val])
+        nmse_lmmse_val = compute_nmse(H_lmmse_val, H_perfect[idx_val])
+        nmse_db_lmmse_val = 10.0 * np.log10(nmse_lmmse_val + 1e-30)
+        ssim_lmmse_val = compute_ssim_batch(H_lmmse_val, H_perfect[idx_val])
+        
+        mmse_lmmse_test = compute_mmse(H_lmmse_test, H_perfect[idx_test])
+        nmse_lmmse_test = compute_nmse(H_lmmse_test, H_perfect[idx_test])
+        nmse_db_lmmse_test = 10.0 * np.log10(nmse_lmmse_test + 1e-30)
+        ssim_lmmse_test = compute_ssim_batch(H_lmmse_test, H_perfect[idx_test])
+        
+        has_lmmse = True
+        print("[LMMSE] LMMSE estimation completed successfully.")
+    except Exception as e:
+        print(f"[LMMSE Warning] Failed to compute LMMSE baseline: {e}")
+
+    # Save to final_epoch.txt
+    txt_path = os.path.join(save_dir, 'final_epoch.txt')
+    os.makedirs(save_dir, exist_ok=True)
+    try:
+        elapsed_total = time.perf_counter() - t_start
+        with open(txt_path, 'w') as f:
+            f.write("=== FINAL EPOCH EVALUATION RESULTS ===\n")
+            f.write(f"SNR (dB):             {args.snr}\n")
+            f.write(f"Input Type:           {args.input_type}\n")
+            f.write(f"Loss Type:            {args.loss_type}\n")
+            f.write(f"Standardize:          {args.standardize}\n")
+            f.write(f"Total Execution Time: {elapsed_total:.1f} s\n")
+            f.write(f"Best Training Epoch:  {best_epoch}\n\n")
+            
+            # --- TRAIN ---
+            f.write("--- TRAIN SET METRICS ---\n")
+            f.write(f"LI Benchmark MMSE:    {mmse_li_benchmark_train:e}\n")
+            f.write(f"HA02 Output MMSE:     {mmse_train:e}\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline MMSE:  {mmse_lmmse_train:e}\n")
+            f.write(f"LI Benchmark NMSE:    {nmse_li_benchmark_train:e} ({nmse_li_benchmark_train_db:.2f} dB)\n")
+            f.write(f"HA02 Output NMSE:     {nmse_train:e} ({nmse_train_db:.2f} dB)\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline NMSE:  {nmse_lmmse_train:e} ({nmse_db_lmmse_train:.2f} dB)\n")
+            f.write(f"LI Benchmark SSIM:    {ssim_li_benchmark_train:.4f}\n")
+            f.write(f"HA02 Output SSIM:     {ssim_train:.4f}\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline SSIM:  {ssim_lmmse_train:.4f}\n")
+            f.write("\n")
+            
+            # --- VALIDATION ---
+            f.write("--- VALIDATION SET METRICS ---\n")
+            f.write(f"LI Benchmark MMSE:    {mmse_li_benchmark_val:e}\n")
+            f.write(f"HA02 Output MMSE:     {mmse_val:e}\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline MMSE:  {mmse_lmmse_val:e}\n")
+            f.write(f"LI Benchmark NMSE:    {nmse_li_benchmark_val:e} ({nmse_li_benchmark_val_db:.2f} dB)\n")
+            f.write(f"HA02 Output NMSE:     {nmse_val:e} ({nmse_val_db:.2f} dB)\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline NMSE:  {nmse_lmmse_val:e} ({nmse_db_lmmse_val:.2f} dB)\n")
+            f.write(f"LI Benchmark SSIM:    {ssim_li_benchmark_val:.4f}\n")
+            f.write(f"HA02 Output SSIM:     {ssim_val:.4f}\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline SSIM:  {ssim_lmmse_val:.4f}\n")
+            f.write("\n")
+            
+            # --- TEST ---
+            f.write("--- TEST SET METRICS ---\n")
+            f.write(f"LI Benchmark MMSE:    {mmse_li_benchmark_test:e}\n")
+            f.write(f"HA02 Output MMSE:     {mmse_test:e}\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline MMSE:  {mmse_lmmse_test:e}\n")
+            f.write(f"LI Benchmark NMSE:    {nmse_li_benchmark_test:e} ({nmse_li_benchmark_test_db:.2f} dB)\n")
+            f.write(f"HA02 Output NMSE:     {nmse_test:e} ({nmse_test_db:.2f} dB)\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline NMSE:  {nmse_lmmse_test:e} ({nmse_db_lmmse_test:.2f} dB)\n")
+            f.write(f"LI Benchmark SSIM:    {ssim_li_benchmark_test:.4f}\n")
+            f.write(f"HA02 Output SSIM:     {ssim_test:.4f}\n")
+            if has_lmmse:
+                f.write(f"LMMSE Baseline SSIM:  {ssim_lmmse_test:.4f}\n")
+        print(f"[Save] Final epoch text report -> {txt_path}")
+    except Exception as e:
+         print(f"[Save Warning] Failed to write final_epoch.txt report: {e}")
+
+    # Save to evaluation_results.mat
+    eval_path = os.path.join(save_dir, 'evaluation_results.mat')
+    eval_dict = {
+        'mmse_train': mmse_train, 'nmse_train': nmse_train, 'nmse_train_db': nmse_train_db, 'ssim_train': ssim_train,
+        'mmse_li_benchmark_train': mmse_li_benchmark_train, 'nmse_li_benchmark_train': nmse_li_benchmark_train, 'nmse_li_benchmark_train_db': nmse_li_benchmark_train_db, 'ssim_li_benchmark_train': ssim_li_benchmark_train,
+        'mmse_val': mmse_val, 'nmse_val': nmse_val, 'nmse_val_db': nmse_val_db, 'ssim_val': ssim_val,
+        'mmse_li_benchmark_val': mmse_li_benchmark_val, 'nmse_li_benchmark_val': nmse_li_benchmark_val, 'nmse_li_benchmark_val_db': nmse_li_benchmark_val_db, 'ssim_li_benchmark_val': ssim_li_benchmark_val,
+        'mmse_test': mmse_test, 'nmse_test': nmse_test, 'nmse_test_db': nmse_test_db, 'ssim_test': ssim_test,
+        'mmse_li_benchmark_test': mmse_li_benchmark_test, 'nmse_li_benchmark_test': nmse_li_benchmark_test, 'nmse_li_benchmark_test_db': nmse_li_benchmark_test_db, 'ssim_li_benchmark_test': ssim_li_benchmark_test,
+        'snr': args.snr, 'input_type': args.input_type, 'standardize': args.standardize, 'best_epoch': best_epoch
+    }
+    if has_lmmse:
+        eval_dict.update({
+            'mmse_lmmse_train': mmse_lmmse_train, 'nmse_lmmse_train': nmse_lmmse_train, 'nmse_db_lmmse_train': nmse_db_lmmse_train, 'ssim_lmmse_train': ssim_lmmse_train,
+            'mmse_lmmse_val': mmse_lmmse_val, 'nmse_lmmse_val': nmse_lmmse_val, 'nmse_db_lmmse_val': nmse_db_lmmse_val, 'ssim_lmmse_val': ssim_lmmse_val,
+            'mmse_lmmse_test': mmse_lmmse_test, 'nmse_lmmse_test': nmse_lmmse_test, 'nmse_db_lmmse_test': nmse_db_lmmse_test, 'ssim_lmmse_test': ssim_lmmse_test,
+        })
+    scipy.io.savemat(eval_path, eval_dict)
+    print(f"[Save] Evaluation results -> {eval_path}")
+
+    # Save the test set channel grids for BER / metrics visualization
+    test_grids_path = os.path.join(save_dir, 'testChannel.mat')
+    test_grids_dict = {
+        'H_original_test': H_perfect_ori[idx_test],      # Original channel before Doppler comp
+        'H_perfect_test': H_perfect[idx_test],            # Effective channel after Doppler comp
+        'H_LS_test': H_input_pilots[idx_test],            # Pilot sequences (LS channel estimates)
+        'pilot_rows': pilot_rows + 1,                     # 1-indexed row coordinates of pilots for MATLAB
+        'pilot_cols': pilot_cols + 1,                     # 1-indexed column coordinates of pilots for MATLAB
+        'H_LI_test': H_li_benchmark_grid[idx_test],       # Benchmark LI channel grid
+        'H_output_test': H_pred_test,                     # Model output channel grid
+        'snr': args.snr
+    }
+    scipy.io.savemat(test_grids_path, test_grids_dict)
+    print(f"[Save] Saved test channel grids MAT file -> {test_grids_path}")
+
+    # Copy readme*.md from dataset folder to results directory
+    try:
+        import shutil
+        import glob
+        snr_folder_name = SNR_FOLDER_MAP.get(args.snr, f'{args.snr}dB')
+        md_pattern = os.path.join(PROJECT_ROOT, 'generatedChan', 'OpenNTN', DATA_FOLDER_NAME, snr_folder_name, 'readme*.md')
+        md_matches = glob.glob(md_pattern)
+        target_dir = os.path.join(save_dir)
+        if md_matches:
+            md_src = md_matches[0]
+            shutil.copy(md_src, target_dir)
+            print(f"[Save] Copied dataset readme ({os.path.basename(md_src)}) to: {target_dir}")
+        else:
+            print(f"[Save Warning] Metadata readme matching '{md_pattern}' not found.")
+    except Exception as e:
+        print(f"[Save Warning] Failed to copy metadata readme: {e}")
+
+    # Save plots
+    if len(idx_test) > 0:
+        save_channel_plots_pdf(
+            H_perfect[idx_test[0]],
+            H_input_pilots[idx_test[0]],
+            H_pred_test[0],
+            pilot_rows, pilot_cols,
+            args.input_type,
+            save_dir,
+            prefix='test'
+        )
+    if len(idx_train) > 0:
+        save_channel_plots_pdf(
+            H_perfect[idx_train[0]],
+            H_input_pilots[idx_train[0]],
+            H_pred_train[0],
+            pilot_rows, pilot_cols,
+            args.input_type,
+            save_dir,
+            prefix='train'
+        )
+
+    print(f'[Done] Finished training and evaluation. Results saved in: {save_dir}')
 
 if __name__ == '__main__':
     main()

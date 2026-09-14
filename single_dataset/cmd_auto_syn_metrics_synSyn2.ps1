@@ -37,14 +37,14 @@ $trainedDataset = "A100_2p18e9_600km_70deg_30kHz"
 
 # 2. List the model subfolders to evaluate
 $models = @(
-    "LS_Attention_cGAN",
-    "LS_Attention_cGAN_standardize"
+    "LS_Attention_DualDomain",
+    "LS_Attention_DualDomain_standardize"
 )
 
 # Corresponding labels/legend names for evaluation
 $labels = @(
-    "LS+Attention+cGAN",
-    "LS+Attention+cGAN std"
+    "LS+Attention+DualDomain",
+    "LS+Attention+DualDomain std"
 )
 
 # Verify list lengths match
