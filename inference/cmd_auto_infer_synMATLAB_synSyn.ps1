@@ -38,10 +38,10 @@ $trainedDataset = "A100_2p18e9_600km_70deg_30kHz"
 
 # 2. Define root folder for outputs and the folder to save results
 $outRootDir = "C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference"
-$outSaveFolderName = "A100__DUR100_2p18e9_600km_30kHz"
+$outSaveFolderName = "A100p1__DUR100p2_2p18e9_600km_30kHz"
 
 # 3. Define (Target) dataset directory (Common for all runs)
-$datasetDir = "C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\generatedChan\OpenNTN\DUR100nsFix_2p18G_600km_70deg_r15km_20to30mps"
+$datasetDir = "C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\generatedChan\OpenNTN\DUR100nsFix_pos2_2p18G_600km_70deg_r15km_20to30mps"
 
 # 4. List the models - the names of subfolders
 $models = @(
@@ -55,10 +55,10 @@ $models = @(
     #     "LI_DnCNN_AxialAttention_standardize",
     #     "LI_DnCNN_CrossAttention",
     #     "LI_DnCNN_CrossAttention_standardize",
-    # "LS_Attention",
-    # "LS_Attention_standardize"
-    "LS_Attention_AxialAttention",
-    "LS_Attention_AxialAttention_standardize"
+    "LS_Attention",
+    "LS_Attention_standardize"
+    # "LS_Attention_AxialAttention",
+    # "LS_Attention_AxialAttention_standardize"
 )
 
 # Corresponding labels/legend names for evaluation
@@ -73,10 +73,10 @@ $labels = @(
     # "LI+DnCNN+AxialTransformer Std Inferred",
     # "LI+DnCNN+CrossTransformer Inferred",
     # "LI+DnCNN+CrossTransformer Std Inferred",
-    # "LS+Transformer Inferred",
-    # "LS+Transformer Std Inferred",
-    "LS+Transformer+AxialTransformer Inferred",
-    "LS+Transformer+AxialTransformer Std Inferred"
+    "LS+Transformer Inferred",
+    "LS+Transformer Std Inferred"
+    # "LS+Transformer+AxialTransformer Inferred",
+    # "LS+Transformer+AxialTransformer Std Inferred"
 )
 
 
