@@ -55,10 +55,14 @@ $models = @(
     #     "LI_DnCNN_AxialAttention_standardize",
     #     "LI_DnCNN_CrossAttention",
     #     "LI_DnCNN_CrossAttention_standardize",
-    "LS_Attention",
-    "LS_Attention_standardize"
+    # "LS_Attention",
+    # "LS_Attention_standardize"
     # "LS_Attention_AxialAttention",
     # "LS_Attention_AxialAttention_standardize"
+    # "LS_Attention_cGAN",
+    # "LS_Attention_cGAN_standardize"
+    "LS_Attention_ResidualRefine",
+    "LS_Attention_ResidualRefine_standardize"
 )
 
 # Corresponding labels/legend names for evaluation
@@ -73,10 +77,10 @@ $labels = @(
     # "LI+DnCNN+AxialTransformer Std Inferred",
     # "LI+DnCNN+CrossTransformer Inferred",
     # "LI+DnCNN+CrossTransformer Std Inferred",
-    "LS+Transformer Inferred",
-    "LS+Transformer Std Inferred"
-    # "LS+Transformer+AxialTransformer Inferred",
-    # "LS+Transformer+AxialTransformer Std Inferred"
+    # "LS+Transformer Inferred",
+    # "LS+Transformer Std Inferred"
+    "LS+Transformer+Residual Inferred",
+    "LS+Transformer+Residual Std Inferred"
 )
 
 
