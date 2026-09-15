@@ -37,14 +37,14 @@ $trainedDataset = "A100_2p18e9_600km_70deg_30kHz"
 
 # 2. List the model subfolders to evaluate
 $models = @(
-    "LS_Attention_DualDomain",
-    "LS_Attention_DualDomain_standardize"
+    "LS_Attention_ResidualRefine",
+    "LS_Attention_ResidualRefine_standardize"
 )
 
 # Corresponding labels/legend names for evaluation
 $labels = @(
-    "LS+Attention+DualDomain",
-    "LS+Attention+DualDomain std"
+    "LS+Attention+Residual",
+    "LS+Attention+Residual std"
 )
 
 # Verify list lengths match
@@ -157,13 +157,6 @@ while ($true) {
             Write-Warning "`nOverall comparative plots failed with exit code $LASTEXITCODE.`n"
         }
 
-        # Clean up training completion trigger file to prevent running again on next loop
-        Write-Output "Cleaning up trigger file done_train.md..."
-        Remove-Item $triggerFile
-        git add $triggerFile
-        git commit -m "Local single_dataset batch evaluations and comparisons completed"
-        git push
-        
         Write-Output "Done! Stopping poll loop."
         break
     }
