@@ -1,0 +1,5 @@
+Folders plotted in this comparison:
+  - Label: LS+Attention+UNet
+    Path:  C:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/single_dataset/A100_2p18e9_600km_70deg_30kHz/LS_Attention_UNetRefine/LS_synthesize
+  - Label: LS+Attention+UNet std
+    Path:  C:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/single_dataset/A100_2p18e9_600km_70deg_30kHz/LS_Attention_UNetRefine_standardize/LS_synthesize
