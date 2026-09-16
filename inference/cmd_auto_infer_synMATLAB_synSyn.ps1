@@ -38,10 +38,10 @@ $trainedDataset = "A100_2p18e9_600km_70deg_30kHz"
 
 # 2. Define root folder for outputs and the folder to save results
 $outRootDir = "C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\inference"
-$outSaveFolderName = "A100port2__DUR100port2_pos3_2p18e9_600kmm_30kHz"
+$outSaveFolderName = "A100_70deg__DUR300_30deg_2p18e9_600kmm_30kHz"
 
 # 3. Define (Target) dataset directory (Common for all runs)
-$datasetDir = "C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\generatedChan\OpenNTN\DUR100nsFix_port2_Apos3_2p18G_600km_70deg_r15km_20to30mps"
+$datasetDir = "C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_NTN_UDA_clean\generatedChan\OpenNTN\DUR300nsFix_NLoS_port1_Apos2_2p18G_600km_30deg_r15km_20to30mps"
 
 # 4. List the models - the names of subfolders
 $models = @(
@@ -259,12 +259,19 @@ Write-Output "`nCreating trigger file done_infer.md at: $inferTriggerFile"
 
 $modelsStr = ($models | ForEach-Object { "- $_" }) -join "`n"
 $labelsStr = ($labels | ForEach-Object { "- $_" }) -join "`n"
+$trainedModelPath = Join-Path $modelRootDir $trainedDataset
 
 $fileContent = @"
 Inference completed successfully on $(Get-Date)
 
 Folder:
 $outSaveFolderName
+
+Trained Model Path (Source):
+$trainedModelPath
+
+Target Dataset Path:
+$datasetDir
 
 Models:
 $modelsStr
