@@ -1,4 +1,4 @@
-# cmd_syn_metrics_synSyn_auto.ps1
+# cmd_auto_syn.ps1
 #
 # OVERVIEW:
 #   This script is an automated end-to-end pipeline that orchestrates single-dataset evaluations:
@@ -8,21 +8,70 @@
 #      "done_train.md" trigger file inside the trained dataset folder.
 #
 #   2. Batch Performance Evaluation:
-#      Once training completion is detected, it loops through configured model subfolders
-#      and calls syn_results_withBER in MATLAB to synthesize evaluation metrics
-#      (MSE, NMSE, SSIM, BER) across all SNR points.
+#      Once training completion is detected (or run manually), it loops through configured model
+#      subfolders, checking whether synthesize results already exist and respects the $rerun flag.
+#      Calls syn_results_withBER in MATLAB to synthesize evaluation metrics (MSE, NMSE, SSIM, BER).
 #
 #   3. Consolidated Comparative Plotting:
-#      Detects model input structures (LI vs LS), auto-resolves their synthesis folders,
+#      Detects model input structures (LI vs LS), gathers their synthesis folders,
 #      finds the next incremental results directory index (e.g., syn_1, syn_2...),
 #      and triggers syn_syn_results_ in MATLAB to generate consolidated comparison PDF curves.
 #
-#   4. Git Cleanup:
-#      Deletes the trigger file done_train.md, stages the change, and pushes it back to GitHub.
-#
 # RUN IN POWERSHELL:
-#   .\single_dataset\cmd_syn_metrics_synSyn_auto.ps1
+#   .\single_dataset\cmd_auto_syn.ps1
 # --------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------
+# Note on available values for $models (in A100_2p18e9_600km_70deg_30kHz):
+#   "LI_cGAN",
+#   "LI_cGAN_standardize",
+#   "LI_DnCNN",
+#   "LI_DnCNN_standardize",
+#   "LI_DnCNN_Attention",
+#   "LI_DnCNN_Attention_standardize",
+#   "LI_DnCNN_AxialAttention",
+#   "LI_DnCNN_AxialAttention_standardize",
+#   "LI_DnCNN_CrossAttention",
+#   "LI_DnCNN_CrossAttention_standardize",
+#   "LS_Attention",
+#   "LS_Attention_standardize",
+#   "LS_Attention_AxialAttention",
+#   "LS_Attention_AxialAttention_standardize",
+#   "LS_Attention_cGAN",
+#   "LS_Attention_cGAN_standardize",
+#   "LS_Attention_DualDomain",
+#   "LS_Attention_DualDomain_standardize",
+#   "LS_Attention_ResidualRefine",
+#   "LS_Attention_ResidualRefine_standardize",
+#   "LS_Attention_UNetRefine",
+#   "LS_Attention_UNetRefine_standardize",
+#   "LS_DnCNN_Attention"
+#
+# and corresponding labels:
+#   "LI+cGAN",
+#   "LI+cGAN std",
+#   "LI+DnCNN",
+#   "LI+DnCNN std",
+#   "LI+DnCNN+Transformer",
+#   "LI+DnCNN+Transformer std",
+#   "LI+DnCNN+AxialTransformer",
+#   "LI+DnCNN+AxialTransformer std",
+#   "LI+DnCNN+CrossTransformer",
+#   "LI+DnCNN+CrossTransformer std",
+#   "LS+Transformer",
+#   "LS+Transformer std",
+#   "LS+Transformer+AxialTransformer",
+#   "LS+Transformer+AxialTransformer std",
+#   "LS+Transformer+cGAN",
+#   "LS+Transformer+cGAN std",
+#   "LS+Transformer+DualDomain",
+#   "LS+Transformer+DualDomain std",
+#   "LS+Transformer+ResidualTransformer",
+#   "LS+Transformer+ResidualTransformer std",
+#   "LS+Transformer+UNetTransformer",
+#   "LS+Transformer+UNetTransformer std",
+#   "LS+Transformer+DnCNN"
+# --------------------------------------------------------------------------------------
+
 
 # Automatically change directory to the folder containing this script
 Set-Location $PSScriptRoot
@@ -37,23 +86,33 @@ $trainedDataset = "A100_2p18e9_600km_70deg_30kHz"
 
 # 2. List the model subfolders to evaluate
 $models = @(
-    "LS_Attention_DualDomain",
-    "LS_Attention_DualDomain_standardize"
+    "LS_Attention_cGAN",
+    "LS_Attention_cGAN_standardize"
 )
 
 # Corresponding labels/legend names for evaluation
 $labels = @(
-    "LS+Attention+DualDomain",
-    "LS+Attention+DualDomain std"
+    "LS+Transformer+cGAN",
+    "LS+Transformer+cGAN std"
+)
+
+# Rerun flag for each model:
+#   0 = Skip MATLAB evaluation if synthesize results already exist (reuse existing)
+#   1 = Force rerun MATLAB evaluation and overwrite existing results
+$rerun = @(
+    0,
+    0
 )
 
 # Verify list lengths match
-if ($models.Length -ne $labels.Length) {
-    Write-Error "Error: The number of models ($($models.Length)) does not match the number of labels ($($labels.Length))!"
+if ($models.Length -ne $labels.Length -or $models.Length -ne $rerun.Length) {
+    Write-Error "Error: The number of models ($($models.Length)), labels ($($labels.Length)), and rerun flags ($($rerun.Length)) must match!"
     Exit
 }
 
 # 3. Git polling configuration for training completion flag (done_train.md)
+# Set $waitForTrigger = $false to run immediately without polling for done_train.md
+$waitForTrigger = $true
 $triggerFile = Join-Path (Join-Path $modelRootDir $trainedDataset) "done_train.md"
 $checkIntervalSeconds = 1200  # Poll every 20 minutes
 
@@ -61,15 +120,27 @@ Write-Output "Polling git pull every 20 minutes..."
 Write-Output "Looking for trigger file: $triggerFile`n"
 
 while ($true) {
-    # Check if trigger file exists locally first (for immediate manual trigger or if already pulled)
-    if (Test-Path $triggerFile) {
-        Write-Output "`n[TRIGGER DETECTED] Found done_train.md inside model folder!"
+    # Check if trigger file exists locally first or if trigger waiting is disabled
+    if (-not $waitForTrigger -or (Test-Path $triggerFile)) {
+        if (Test-Path $triggerFile) {
+            Write-Output "`n[TRIGGER DETECTED] Found done_train.md inside model folder!"
+        }
+        else {
+            Write-Output "`n[MANUAL RUN] Running evaluation immediately (waitForTrigger = false)..."
+        }
         Write-Output "Starting MATLAB batch evaluation loop..."
+        
+        # Automatically locate official MATLAB CLI launcher (prevents GUI detachment)
+        $matlabExe = "matlab"
+        if (Test-Path "C:\Program Files\MATLAB\R2025a\bin\matlab.exe") {
+            $matlabExe = "C:\Program Files\MATLAB\R2025a\bin\matlab.exe"
+        }
 
         # Loop through each model and run the MATLAB evaluation function (syn_results_withBER)
         for ($i = 0; $i -lt $models.Length; $i++) {
             $model = $models[$i]
             $label = $labels[$i]
+            $forceRerun = ($rerun[$i] -eq 1) -or ($rerun[$i] -eq $true)
             
             # Construct absolute evaluation folder path
             $evalFolder = Join-Path (Join-Path $modelRootDir $trainedDataset) $model
@@ -80,18 +151,37 @@ while ($true) {
                 continue
             }
             
+            # Determine expected synthesize folder and MAT result file
+            $prefix = "LI"
+            if ($model.StartsWith("LS_")) {
+                $prefix = "LS"
+            }
+            $synFolder = Join-Path $evalFolder "${prefix}_synthesize"
+            $synMatFile = Join-Path $synFolder "synthesized_results.mat"
+            $alreadySynthesized = (Test-Path $synFolder) -and (Test-Path $synMatFile)
+
             Write-Output "------------------------------------------------------------"
             Write-Output "Processing Run $($i + 1)/$($models.Length):"
-            Write-Output "  Model Folder: $model"
-            Write-Output "  Full Path   : $evalFolder"
-            Write-Output "  Plot Label  : $label"
-            Write-Output "------------------------------------------------------------"
-            
-            # Automatically locate official MATLAB CLI launcher (prevents GUI detachment)
-            $matlabExe = "matlab"
-            if (Test-Path "C:\Program Files\MATLAB\R2025a\bin\matlab.exe") {
-                $matlabExe = "C:\Program Files\MATLAB\R2025a\bin\matlab.exe"
+            Write-Output "  Model Folder : $model"
+            Write-Output "  Full Path    : $evalFolder"
+            Write-Output "  Plot Label   : $label"
+            Write-Output "  Rerun Flag   : $($rerun[$i])"
+
+            # Check if we should skip MATLAB evaluation
+            if ($alreadySynthesized -and -not $forceRerun) {
+                Write-Output "  Status       : [SKIP] Results already exist at '$synFolder'."
+                Write-Output "                 Skipping MATLAB evaluation (rerun = 0)."
+                Write-Output "------------------------------------------------------------`n"
+                continue
             }
+
+            if ($alreadySynthesized -and $forceRerun) {
+                Write-Output "  Status       : [RERUN] Results exist, but rerun = 1. Overwriting..."
+            }
+            else {
+                Write-Output "  Status       : [NEW] Running MATLAB evaluation..."
+            }
+            Write-Output "------------------------------------------------------------"
 
             # Invoke MATLAB in headless batch mode, calling the syn_results_withBER function
             $escapedFolder = $evalFolder.Replace('\', '/')
@@ -112,14 +202,30 @@ while ($true) {
 
         # Construct cell array folders for comparison (pointing to LI_synthesize or LS_synthesize)
         $compFolders = @()
+        $compLabels = @()
         for ($i = 0; $i -lt $models.Length; $i++) {
             $model = $models[$i]
+            $label = $labels[$i]
             $evalFolder = Join-Path (Join-Path $modelRootDir $trainedDataset) $model
             $prefix = "LI"
             if ($model.StartsWith("LS_")) {
                 $prefix = "LS"
             }
-            $compFolders += Join-Path $evalFolder "${prefix}_synthesize"
+            $synFolder = Join-Path $evalFolder "${prefix}_synthesize"
+            $synMat = Join-Path $synFolder "synthesized_results.mat"
+
+            if (Test-Path $synMat) {
+                $compFolders += $synFolder
+                $compLabels += $label
+            }
+            else {
+                Write-Warning "Excluding '$model' from comparative plot: '$synMat' not found."
+            }
+        }
+
+        if ($compFolders.Length -eq 0) {
+            Write-Error "No valid synthesized results found to compare! Skipping overall plot."
+            break
         }
 
         # Incremental output folder search (syn_x) under the dataset's syn/ folder
@@ -144,7 +250,7 @@ while ($true) {
 
         # Build MATLAB cell arrays
         $matlabFoldersCell = "{" + (($compFolders | ForEach-Object { "'$( $_.Replace('\', '/') )'" }) -join ", ") + "}"
-        $matlabLabelsCell = "{" + (($labels | ForEach-Object { "'$_'" }) -join ", ") + "}"
+        $matlabLabelsCell = "{" + (($compLabels | ForEach-Object { "'$_'" }) -join ", ") + "}"
         $compareCmd = "syn_syn_results_($matlabFoldersCell, $matlabLabelsCell, '$escapedCompareOut')"
 
         Write-Output "Saving combined comparison to: $compareOutFolder"
