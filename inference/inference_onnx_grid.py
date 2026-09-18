@@ -355,10 +355,197 @@ def save_inferred_to_mat(dest_path, source_path_or_dict, key, H_est, metrics_dic
     save_dict['nmse_db'] = metrics_dict['nmse_db']
     save_dict['ssim'] = metrics_dict['ssim']
     
-    # 3. Save to dest_path
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
     scipy.io.savemat(dest_path, save_dict)
     print(f"  [SUCCESS] Saved combined MAT file to: {dest_path}")
+
+
+def plot_snr_results(dest_folder, H_est, H_perf_complex, snr, num_pairs=4):
+    """
+    Plots and saves comparison figures (Real parts and Magnitudes) between
+    inferred channel outputs and ground truth labels for num_pairs diverse samples.
+    Figures are saved directly in the SNR result folder (dest_folder).
+    """
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        N_samples = H_est.shape[0]
+        if N_samples <= 0:
+            return
+
+        num_pairs = min(num_pairs, N_samples)
+        if N_samples >= num_pairs:
+            sample_indices = np.linspace(0, N_samples - 1, num_pairs, dtype=int).tolist()
+        else:
+            sample_indices = list(range(N_samples))
+
+        # Ensure shapes match (N, 132, 14)
+        if H_perf_complex.shape != H_est.shape and H_perf_complex.shape[1:] == H_est.shape[1:][::-1]:
+            H_perf_ref = np.transpose(H_perf_complex, (0, 2, 1))
+        else:
+            H_perf_ref = H_perf_complex
+
+        # Align grid to (132, 14) with subcarriers on Y and symbols on X
+        def align_grid(grid):
+            if grid.shape == (14, 132):
+                return grid.T
+            return grid
+
+        # -------------------------------------------------------------
+        # Figure 1: Real Parts Comparison (4 rows x 2 columns)
+        # -------------------------------------------------------------
+        fig_real, axes_real = plt.subplots(num_pairs, 2, figsize=(11, 3.2 * num_pairs), squeeze=False)
+        fig_real.suptitle(f"Channel Estimation vs Label - Real Parts (SNR = {snr} dB)", fontsize=14, fontweight='bold', y=0.995)
+
+        for row_idx, s_idx in enumerate(sample_indices):
+            h_true = align_grid(H_perf_ref[s_idx])
+            h_pred = align_grid(H_est[s_idx])
+
+            # Compute sample NMSE
+            err_sq = np.mean(np.abs(h_pred - h_true) ** 2)
+            ref_sq = np.mean(np.abs(h_true) ** 2)
+            nmse_db = 10.0 * np.log10(err_sq / (ref_sq + 1e-30) + 1e-30)
+
+            real_true = h_true.real
+            real_pred = h_pred.real
+            vmin = min(float(np.min(real_true)), float(np.min(real_pred)))
+            vmax = max(float(np.max(real_true)), float(np.max(real_pred)))
+
+            # Ground Truth (Label)
+            ax_lbl = axes_real[row_idx, 0]
+            im_lbl = ax_lbl.imshow(real_true, aspect='auto', cmap='coolwarm', origin='lower', vmin=vmin, vmax=vmax)
+            ax_lbl.set_title(f"Sample #{s_idx} - Ground Truth Label (Real)", fontsize=10)
+            ax_lbl.set_ylabel("Subcarrier Index (0-131)", fontsize=9)
+            if row_idx == num_pairs - 1:
+                ax_lbl.set_xlabel("OFDM Symbol Index (0-13)", fontsize=9)
+            fig_real.colorbar(im_lbl, ax=ax_lbl, fraction=0.046, pad=0.04)
+
+            # Inferred Channel
+            ax_prd = axes_real[row_idx, 1]
+            im_prd = ax_prd.imshow(real_pred, aspect='auto', cmap='coolwarm', origin='lower', vmin=vmin, vmax=vmax)
+            ax_prd.set_title(f"Sample #{s_idx} - Inferred (Real) | NMSE: {nmse_db:.2f} dB", fontsize=10)
+            if row_idx == num_pairs - 1:
+                ax_prd.set_xlabel("OFDM Symbol Index (0-13)", fontsize=9)
+            fig_real.colorbar(im_prd, ax=ax_prd, fraction=0.046, pad=0.04)
+
+        fig_real.tight_layout()
+        real_png = os.path.join(dest_folder, "comparison_real_parts.png")
+        real_pdf = os.path.join(dest_folder, "comparison_real_parts.pdf")
+        fig_real.savefig(real_png, dpi=200, bbox_inches='tight')
+        fig_real.savefig(real_pdf, format='pdf', bbox_inches='tight')
+        plt.close(fig_real)
+        print(f"    [Plot] Saved real parts comparison -> {real_png}")
+
+        # -------------------------------------------------------------
+        # Figure 2: Magnitudes Comparison (4 rows x 2 columns)
+        # -------------------------------------------------------------
+        fig_mag, axes_mag = plt.subplots(num_pairs, 2, figsize=(11, 3.2 * num_pairs), squeeze=False)
+        fig_mag.suptitle(f"Channel Estimation vs Label - Magnitudes |H| (SNR = {snr} dB)", fontsize=14, fontweight='bold', y=0.995)
+
+        for row_idx, s_idx in enumerate(sample_indices):
+            h_true = align_grid(H_perf_ref[s_idx])
+            h_pred = align_grid(H_est[s_idx])
+
+            err_sq = np.mean(np.abs(h_pred - h_true) ** 2)
+            ref_sq = np.mean(np.abs(h_true) ** 2)
+            nmse_db = 10.0 * np.log10(err_sq / (ref_sq + 1e-30) + 1e-30)
+
+            mag_true = np.abs(h_true)
+            mag_pred = np.abs(h_pred)
+            vmin = 0.0
+            vmax = max(float(np.max(mag_true)), float(np.max(mag_pred)))
+
+            # Ground Truth (Label)
+            ax_lbl = axes_mag[row_idx, 0]
+            im_lbl = ax_lbl.imshow(mag_true, aspect='auto', cmap='viridis', origin='lower', vmin=vmin, vmax=vmax)
+            ax_lbl.set_title(f"Sample #{s_idx} - Ground Truth Label (Magnitude)", fontsize=10)
+            ax_lbl.set_ylabel("Subcarrier Index (0-131)", fontsize=9)
+            if row_idx == num_pairs - 1:
+                ax_lbl.set_xlabel("OFDM Symbol Index (0-13)", fontsize=9)
+            fig_mag.colorbar(im_lbl, ax=ax_lbl, fraction=0.046, pad=0.04)
+
+            # Inferred Channel
+            ax_prd = axes_mag[row_idx, 1]
+            im_prd = ax_prd.imshow(mag_pred, aspect='auto', cmap='viridis', origin='lower', vmin=vmin, vmax=vmax)
+            ax_prd.set_title(f"Sample #{s_idx} - Inferred (Magnitude) | NMSE: {nmse_db:.2f} dB", fontsize=10)
+            if row_idx == num_pairs - 1:
+                ax_prd.set_xlabel("OFDM Symbol Index (0-13)", fontsize=9)
+            fig_mag.colorbar(im_prd, ax=ax_prd, fraction=0.046, pad=0.04)
+
+        fig_mag.tight_layout()
+        mag_png = os.path.join(dest_folder, "comparison_magnitudes.png")
+        mag_pdf = os.path.join(dest_folder, "comparison_magnitudes.pdf")
+        fig_mag.savefig(mag_png, dpi=200, bbox_inches='tight')
+        fig_mag.savefig(mag_pdf, format='pdf', bbox_inches='tight')
+        plt.close(fig_mag)
+        print(f"    [Plot] Saved magnitudes comparison -> {mag_png}")
+
+        # -------------------------------------------------------------
+        # Figure 3: Comprehensive 4x4 (Real & Magnitude side-by-side)
+        # -------------------------------------------------------------
+        fig_all, axes_all = plt.subplots(num_pairs, 4, figsize=(18, 3.0 * num_pairs), squeeze=False)
+        fig_all.suptitle(f"Channel Estimation vs Label - Real & Magnitude (SNR = {snr} dB)", fontsize=15, fontweight='bold', y=0.995)
+
+        for row_idx, s_idx in enumerate(sample_indices):
+            h_true = align_grid(H_perf_ref[s_idx])
+            h_pred = align_grid(H_est[s_idx])
+
+            err_sq = np.mean(np.abs(h_pred - h_true) ** 2)
+            ref_sq = np.mean(np.abs(h_true) ** 2)
+            nmse_db = 10.0 * np.log10(err_sq / (ref_sq + 1e-30) + 1e-30)
+
+            real_true = h_true.real
+            real_pred = h_pred.real
+            v_min_r = min(float(np.min(real_true)), float(np.min(real_pred)))
+            v_max_r = max(float(np.max(real_true)), float(np.max(real_pred)))
+
+            mag_true = np.abs(h_true)
+            mag_pred = np.abs(h_pred)
+            v_max_m = max(float(np.max(mag_true)), float(np.max(mag_pred)))
+
+            # Col 0: Real Label
+            ax0 = axes_all[row_idx, 0]
+            im0 = ax0.imshow(real_true, aspect='auto', cmap='coolwarm', origin='lower', vmin=v_min_r, vmax=v_max_r)
+            ax0.set_title(f"S#{s_idx} Label (Real)", fontsize=9)
+            ax0.set_ylabel(f"S#{s_idx}\nSubcarriers", fontsize=9)
+            fig_all.colorbar(im0, ax=ax0, fraction=0.046, pad=0.04)
+
+            # Col 1: Real Inferred
+            ax1 = axes_all[row_idx, 1]
+            im1 = ax1.imshow(real_pred, aspect='auto', cmap='coolwarm', origin='lower', vmin=v_min_r, vmax=v_max_r)
+            ax1.set_title(f"S#{s_idx} Infer (Real) | {nmse_db:.1f}dB", fontsize=9)
+            fig_all.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
+
+            # Col 2: Magnitude Label
+            ax2 = axes_all[row_idx, 2]
+            im2 = ax2.imshow(mag_true, aspect='auto', cmap='viridis', origin='lower', vmin=0, vmax=v_max_m)
+            ax2.set_title(f"S#{s_idx} Label (|H|)", fontsize=9)
+            fig_all.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
+
+            # Col 3: Magnitude Inferred
+            ax3 = axes_all[row_idx, 3]
+            im3 = ax3.imshow(mag_pred, aspect='auto', cmap='viridis', origin='lower', vmin=0, vmax=v_max_m)
+            ax3.set_title(f"S#{s_idx} Infer (|H|) | {nmse_db:.1f}dB", fontsize=9)
+            fig_all.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04)
+
+            if row_idx == num_pairs - 1:
+                ax0.set_xlabel("Symbols", fontsize=8)
+                ax1.set_xlabel("Symbols", fontsize=8)
+                ax2.set_xlabel("Symbols", fontsize=8)
+                ax3.set_xlabel("Symbols", fontsize=8)
+
+        fig_all.tight_layout()
+        all_png = os.path.join(dest_folder, "comparison_real_and_magnitude.png")
+        all_pdf = os.path.join(dest_folder, "comparison_real_and_magnitude.pdf")
+        fig_all.savefig(all_png, dpi=200, bbox_inches='tight')
+        fig_all.savefig(all_pdf, format='pdf', bbox_inches='tight')
+        plt.close(fig_all)
+        print(f"    [Plot] Saved all-in-one comparison -> {all_png}")
+
+    except Exception as plot_err:
+        print(f"    [Warning] Failed to generate comparison plots: {plot_err}")
 
 
 def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_SAMPLES,
@@ -703,6 +890,9 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
         except Exception as report_err:
             print(f"    [Warning] Failed to write inference time note: {report_err}")
 
+        # 11. Plot visual channel comparison figures (4 diverse sample pairs: real parts & magnitudes)
+        plot_snr_results(dest_folder, H_est, H_perf_complex, snr, num_pairs=4)
+
         matched_count += 1
 
     print("\n" + "="*80)
@@ -769,6 +959,11 @@ All variables are saved combined in **`inferredChannel.mat`** inside each target
 - `pilot_rows` / `pilot_cols` / `pilot_indices`: Grid positions of the pilot symbols.
 - Sim geometry & propagation vectors: `r_ue_ECEF_all`, `ut_loc_ENU_all`, `slant_ranges`, `doppler_shifts_all`, `pl_dB_all`, `elevation_angles`, etc.
 - Constant system variables: `bs_loc_ENU`, `r_sat_ECEF`, `v_sat_ECEF`, `v_sat_ENU`, `satelliteDopplerShift_bc`, etc.
+
+### Visual Comparison Plots Saved Per SNR Folder
+- `comparison_real_parts.png` / `.pdf`: Real part heatmaps for 4 diverse sample pairs (Label vs Inferred).
+- `comparison_magnitudes.png` / `.pdf`: Magnitude heatmaps for 4 diverse sample pairs (Label vs Inferred).
+- `comparison_real_and_magnitude.png` / `.pdf`: Side-by-side 4x4 matrix combining real parts and magnitudes.
 
 ## Inference Details
 - **ONNX Model File**: {detected_models_str}
