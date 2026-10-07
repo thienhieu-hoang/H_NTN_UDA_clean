@@ -12,14 +12,17 @@ Workflow:
 - Input: 
     - H_LS sequence (only values at the pilot positions)
 - Process: 
-    - Apply min-max scaling (min-max of the input) to all input and corresponding label H_true (same scaling for all) to scale the values to [-1, 1]. 
+    - Apply scaling to input and corresponding label H_true:
+        * Min-max scaling to [-1, 1] (default)
+        * Standardization (zero-mean, unit-variance) via `--standardize`
+        * Root Mean Square (RMS) power scaling via `--rms`
     ----------------------------------------------------
     Go through Attention + FFN blocks:
         - Attention block computes relationships between the pilot values.
         - Fully connected layer upsamples/expands the features to fill the unknown positions.
         - Convolutional layers refine the reconstructed 132 x 14 grid.
     ----------------------------------------------------
-    - De-scale the output with the min-max of the input.
+    - De-scale the output with the scaling parameters of the input.
 - Output: 
     - H_hat_LS (132 x 14 grid) 
 ====================================================================================
@@ -27,8 +30,11 @@ Usage
 -----
     python train_attention_LS.py --snr 10 --loss-type combined --ssim-weight-start 0.95 --ssim-weight-end 0.05 --save-model
 
+    # Example for running with RMS normalization
+    python train_attention_LS.py --snr 10 --rms --save-model
+
     # Example for running a quick smoke test
-    python train_attention_LS.py --snr 10 --test-code --save-model
+    python train_attention_LS.py --snr 10 --rms --test-code
 """
 
 # ── Standard library ────────────────────────────────────────────────────────
@@ -110,8 +116,8 @@ def _setup_paths():
 
 THIS_DIR, PROJECT_ROOT = _setup_paths()
 
-# Import standardization helpers
-from utils import standardizeScaler_ha02, deStandardize_ha02
+# Import standardization and RMS helpers
+from utils import standardizeScaler_ha02, deStandardize_ha02, rmsScaler_ha02, deRMS_ha02
 
 # =============================================================================
 # 1. TRANSFORMER ENCODER BLOCK (Attention Pre-processor)
@@ -539,12 +545,15 @@ def deMinMax_ha02(y_scaled, x_min, x_max, lower_range=-1):
     y_denormed = y_norm * scale_bc + shift_bc
     return y_denormed
 
-def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray, lower_range: int, standardize: bool = False):
+def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray, lower_range: int, standardize: bool = False, rms_norm: bool = False):
     y = complx2real(H_perf_batch)
     x = complx2real(H_in_batch)
     x = tf.cast(x, tf.float32)
     y = tf.cast(y, tf.float32)
-    if standardize:
+    if rms_norm:
+        x_sc, y_sc, rms_val = rmsScaler_ha02(x, y)
+        x_val1, x_val2 = rms_val, None
+    elif standardize:
         x_sc, y_sc, x_val1, x_val2 = standardizeScaler_ha02(x, y)
     else:
         x_sc, y_sc, x_val1, x_val2 = minmaxScaler_ha02(x, y, lower_range)
@@ -678,7 +687,7 @@ def save_loss_plot_pdf(history: dict, save_dir: str):
         print(f'[PDF Export Warning] Failed to export loss history plots: {e}')
 
 @tf.function
-def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim_weight, use_huber=False, huber_delta=1.0, standardize=False):
+def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim_weight, use_huber=False, huber_delta=1.0, standardize=False, rms_norm=False):
     x_scaled = tf.cast(x_scaled, tf.float32)
     y_scaled = tf.cast(y_scaled, tf.float32)
     with tf.GradientTape() as tape:
@@ -695,7 +704,7 @@ def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim
             ssim_loss = tf.constant(0.0)
         else:
             mse_loss = loss_fn(y_scaled, y_pred)
-            if standardize:
+            if standardize or rms_norm:
                 max_val = tf.reduce_max(y_scaled) - tf.reduce_min(y_scaled)
                 max_val = tf.maximum(max_val, 1e-8)
             else:
@@ -708,7 +717,7 @@ def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim
     optimizer.apply_gradients(zip(gradients, model.trainable_variables))
     return total_loss, mse_loss, ssim_loss
 
-def infer_channel(model, H_perfect_data, H_input_pilots, batch_size=16, lower_range=-1, standardize=False):
+def infer_channel(model, H_perfect_data, H_input_pilots, batch_size=16, lower_range=-1, standardize=False, rms_norm=False):
     N_samples = H_perfect_data.shape[0]
     H_pred_all = []
     
@@ -717,9 +726,11 @@ def infer_channel(model, H_perfect_data, H_input_pilots, batch_size=16, lower_ra
         h_p = H_perfect_data[batch_idx]
         h_i = H_input_pilots[batch_idx]
         
-        x_sc, y_sc, x_val1, x_val2 = preprocess_batch(h_p, h_i, lower_range, standardize=standardize)
+        x_sc, y_sc, x_val1, x_val2 = preprocess_batch(h_p, h_i, lower_range, standardize=standardize, rms_norm=rms_norm)
         y_pred_sc = model(x_sc, training=False)
-        if standardize:
+        if rms_norm:
+            y_pred = deRMS_ha02(y_pred_sc, x_val1)
+        elif standardize:
             y_pred = deStandardize_ha02(y_pred_sc, x_val1, x_val2)
         else:
             y_pred = deMinMax_ha02(y_pred_sc, x_val1, x_val2, lower_range)
@@ -784,8 +795,13 @@ def main():
     parser.add_argument('--ssim-weight-end', type=float, default=DEFAULT_SSIM_END)
     parser.add_argument('--standardize', action='store_true',
                         help='Use sample-wise standardization (mean/var) instead of min-max scaling')
+    parser.add_argument('--rms', action='store_true',
+                        help='Use sample-wise Root Mean Square (RMS) power scaling instead of min-max scaling')
 
     args = parser.parse_args()
+
+    if args.standardize and args.rms:
+        parser.error("Cannot specify both --standardize and --rms. Choose one normalization method.")
 
     # Visible GPUs
     if args.no_gpu:
@@ -825,11 +841,17 @@ def main():
         if args.loss_type == 'combined':
             ssim_start_str = str(args.ssim_weight_start).replace('.', '_')
             ssim_end_str = str(args.ssim_weight_end).replace('.', '_')
-            suffix = 'standardize' if args.standardize else 'ssim_decay'
+            if args.rms:
+                suffix = 'rms'
+            elif args.standardize:
+                suffix = 'standardize'
+            else:
+                suffix = 'ssim_decay'
             loss_name = f"{suffix}_s{ssim_start_str}_e{ssim_end_str}"
         else:
             huber_delta_str = str(args.huber_delta).replace('.', '_')
-            loss_name = f"huber_d{huber_delta_str}"
+            norm_str = '_rms' if args.rms else ('_standardize' if args.standardize else '')
+            loss_name = f"huber_d{huber_delta_str}{norm_str}"
         save_dir = os.path.join(THIS_DIR, 'trained_models_ha02', f'SNR_{args.snr}dB_{args.input_type}_{loss_name}')
     os.makedirs(save_dir, exist_ok=True)
 
@@ -862,8 +884,9 @@ def main():
         history['ssim_weight_history'].append(epoch_ssim_weight)
         ssim_weight_tf = tf.constant(epoch_ssim_weight, dtype=tf.float32)
 
-        # Convert standardize flag to TF constant
+        # Convert flags to TF constants
         standardize_tf = tf.constant(args.standardize, dtype=tf.bool)
+        rms_tf = tf.constant(args.rms, dtype=tf.bool)
 
         # Train loop
         ep_train_loss = 0.0
@@ -873,11 +896,11 @@ def main():
             batch_idx = idx_e[b * args.batch_size:(b + 1) * args.batch_size]
             h_p = H_perfect[batch_idx]
             h_i = H_input_pilots[batch_idx]
-            x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range, standardize=args.standardize)
+            x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range, standardize=args.standardize, rms_norm=args.rms)
             
             total_l, mse_l, ssim_l = _train_step(
                 model, x_sc, y_sc, optimizer, loss_fn, lower_range, ssim_weight_tf,
-                use_huber=use_huber, huber_delta=huber_delta, standardize=standardize_tf
+                use_huber=use_huber, huber_delta=huber_delta, standardize=standardize_tf, rms_norm=rms_tf
             )
             ep_train_loss += total_l.numpy()
             ep_train_mse  += mse_l.numpy()
@@ -891,7 +914,7 @@ def main():
             batch_idx = idx_val[b * args.batch_size:(b + 1) * args.batch_size]
             h_p = H_perfect[batch_idx]
             h_i = H_input_pilots[batch_idx]
-            x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range, standardize=args.standardize)
+            x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range, standardize=args.standardize, rms_norm=args.rms)
             x_sc = tf.cast(x_sc, tf.float32)
             y_sc = tf.cast(y_sc, tf.float32)
             
@@ -905,7 +928,7 @@ def main():
                 ssim_l = tf.constant(0.0)
             else:
                 mse_l = loss_fn(y_sc, y_pred_sc)
-                if args.standardize:
+                if args.rms or args.standardize:
                     max_val = tf.reduce_max(y_sc) - tf.reduce_min(y_sc)
                     max_val = tf.maximum(max_val, 1e-8)
                 else:
@@ -949,9 +972,9 @@ def main():
 
     # Final Evaluation (Validation + Test sets)
     print('\n[Evaluation] Running final inference on validation & test sets...')
-    H_pred_train = infer_channel(model, H_perfect[idx_train], H_input_pilots[idx_train], args.batch_size, lower_range, standardize=args.standardize)
-    H_pred_val   = infer_channel(model, H_perfect[idx_val], H_input_pilots[idx_val], args.batch_size, lower_range, standardize=args.standardize)
-    H_pred_test  = infer_channel(model, H_perfect[idx_test], H_input_pilots[idx_test], args.batch_size, lower_range, standardize=args.standardize)
+    H_pred_train = infer_channel(model, H_perfect[idx_train], H_input_pilots[idx_train], args.batch_size, lower_range, standardize=args.standardize, rms_norm=args.rms)
+    H_pred_val   = infer_channel(model, H_perfect[idx_val], H_input_pilots[idx_val], args.batch_size, lower_range, standardize=args.standardize, rms_norm=args.rms)
+    H_pred_test  = infer_channel(model, H_perfect[idx_test], H_input_pilots[idx_test], args.batch_size, lower_range, standardize=args.standardize, rms_norm=args.rms)
 
     # Compute final metrics
     mmse_train = compute_mmse(H_pred_train, H_perfect[idx_train])
@@ -1037,6 +1060,7 @@ def main():
             f.write(f"Input Type:           {args.input_type}\n")
             f.write(f"Loss Type:            {args.loss_type}\n")
             f.write(f"Standardize:          {args.standardize}\n")
+            f.write(f"RMS:                  {args.rms}\n")
             f.write(f"Total Execution Time: {elapsed_total:.1f} s\n")
             f.write(f"Best Training Epoch:  {best_epoch}\n\n")
             
@@ -1099,7 +1123,7 @@ def main():
         'mmse_li_benchmark_val': mmse_li_benchmark_val, 'nmse_li_benchmark_val': nmse_li_benchmark_val, 'nmse_li_benchmark_val_db': nmse_li_benchmark_val_db, 'ssim_li_benchmark_val': ssim_li_benchmark_val,
         'mmse_test': mmse_test, 'nmse_test': nmse_test, 'nmse_test_db': nmse_test_db, 'ssim_test': ssim_test,
         'mmse_li_benchmark_test': mmse_li_benchmark_test, 'nmse_li_benchmark_test': nmse_li_benchmark_test, 'nmse_li_benchmark_test_db': nmse_li_benchmark_test_db, 'ssim_li_benchmark_test': ssim_li_benchmark_test,
-        'snr': args.snr, 'input_type': args.input_type, 'standardize': args.standardize, 'best_epoch': best_epoch
+        'snr': args.snr, 'input_type': args.input_type, 'standardize': args.standardize, 'rms': args.rms, 'best_epoch': best_epoch
     }
     if has_lmmse:
         eval_dict.update({

@@ -334,3 +334,70 @@ def deStandardize_ha02(y_scaled, x_mean, x_std):
     shift_bc = tf.reshape(x_mean, [B, 1, 1, 2])
     y_denormed = y_scaled * scale_bc + shift_bc
     return y_denormed
+
+def rmsScaler(x, rms_pre=None):
+    """
+    Scale tf.Tensor sample-wise along spatial/grid dimensions by its Root Mean Square (RMS).
+    x: shape [N, n_subcs, n_symb, 2] or general tensor with last dimension 2 (real, imag).
+    """
+    x = tf.convert_to_tensor(x, dtype=tf.float32)
+    N = tf.shape(x)[0]
+    if rms_pre is not None:
+        rms = tf.convert_to_tensor(rms_pre, dtype=tf.float32)
+    else:
+        # Sum squares of real and imag across channels: [N, ...]
+        power_per_elem = tf.reduce_sum(tf.square(x), axis=-1)
+        x_reshaped = tf.reshape(power_per_elem, [N, -1])
+        mean_power = tf.reduce_mean(x_reshaped, axis=1)  # [N]
+        rms = tf.sqrt(tf.clip_by_value(mean_power, 1e-30, tf.float32.max))  # [N]
+        
+    rms_broadcast = tf.reshape(rms, [N, 1, 1, 1])
+    x_scaled = x / rms_broadcast
+    return x_scaled, rms
+
+def deRMS(x_normd, rms):
+    """
+    Perform inverse sample-wise RMS scaling.
+    x_normd: shape [N, n_subcs, n_symb, 2]
+    rms: shape [N]
+    """
+    x_normd = tf.convert_to_tensor(x_normd, dtype=tf.float32)
+    rms = tf.convert_to_tensor(rms, dtype=tf.float32)
+    N = tf.shape(x_normd)[0]
+    rms_broadcast = tf.reshape(rms, [N, 1, 1, 1])
+    return x_normd * rms_broadcast
+
+def rmsScaler_ha02(x, y, rms_pre=None):
+    """
+    Scale tf.Tensor sample-wise by Root Mean Square (RMS) computed strictly from input x
+    tailored to train_attention_LS.py input format (x: sequence shape [B, L, 2], y: grid shape [B, H, W, 2]).
+    """
+    x = tf.convert_to_tensor(x, dtype=tf.float32)
+    y = tf.convert_to_tensor(y, dtype=tf.float32)
+    B = tf.shape(x)[0]
+    
+    if rms_pre is not None:
+        rms = tf.convert_to_tensor(rms_pre, dtype=tf.float32)
+    else:
+        # x is [B, L, 2] where last dimension is [real, imag]
+        power_per_elem = tf.reduce_sum(tf.square(x), axis=-1)  # [B, L]
+        mean_power = tf.reduce_mean(power_per_elem, axis=1)    # [B]
+        rms = tf.sqrt(tf.clip_by_value(mean_power, 1e-30, tf.float32.max))  # [B]
+        
+    rms_bc_x = tf.reshape(rms, [B, 1, 1])
+    rms_bc_y = tf.reshape(rms, [B, 1, 1, 1])
+    
+    x_scaled = x / rms_bc_x
+    y_scaled = y / rms_bc_y
+    return x_scaled, y_scaled, rms
+
+def deRMS_ha02(y_scaled, rms):
+    """
+    Perform inverse sample-wise RMS scaling for y_scaled [B, H, W, 2].
+    rms: shape [B]
+    """
+    y_scaled = tf.convert_to_tensor(y_scaled, dtype=tf.float32)
+    rms = tf.convert_to_tensor(rms, dtype=tf.float32)
+    B = tf.shape(y_scaled)[0]
+    rms_bc = tf.reshape(rms, [B, 1, 1, 1])
+    return y_scaled * rms_bc

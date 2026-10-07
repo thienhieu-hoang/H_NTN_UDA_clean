@@ -12,6 +12,7 @@ Features of this script:
 2. Normalization Options:
    - Sample-wise min-max scaling to [-1, 1] (default).
    - Sample-wise standardization (mean/std normalization) via `--standardize` flag.
+   - Sample-wise Root Mean Square (RMS) power scaling via `--rms` flag.
 3. Preprocessing:
    - If input is H_LI: clipping extrapolation elements (outside pilot boundaries) using the min and max
      values of pilot positions to reduce interpolation boundary errors.
@@ -21,13 +22,16 @@ Features of this script:
 ====================================================================================
 Usage
 -----
-    python train_CNN_decaySSIM.py --snr 10 --ssim-weight-start 0.5 --ssim-weight-end 0.05
+    python train_DnCNN.py --snr 10 --ssim-weight-start 0.5 --ssim-weight-end 0.05
 
     # Example for running a quick smoke test
-    python train_CNN_decaySSIM.py --snr 10 --test-code --save-model
+    python train_DnCNN.py --snr 10 --test-code --save-model
+
+    # Example for linear interpolation input with extrapolation clipping and RMS scaling
+    python train_DnCNN.py --snr 10 --input-type li --clip-extrap --rms --save-model
 
     # Example for linear interpolation input with extrapolation clipping and standardization
-    python train_CNN_decaySSIM.py --snr 10 --input-type li --clip-extrap --standardize --save-model
+    python train_DnCNN.py --snr 10 --input-type li --clip-extrap --standardize --save-model
 """
 
 # -- Standard library --------------------------------------------------------
@@ -118,7 +122,7 @@ THIS_DIR, PROJECT_ROOT = _setup_paths()
 
 # Lazy import of JMMD utilities (requires project_root on sys.path)
 from utils_GAN import CNNGenerator                         # JMMD/helper/utils_GAN.py
-from utils import minmaxScaler, deMinMax, complx2real, standardizeScaler, deStandardize      # Domain_Adversarial/helper/utils.py
+from utils import minmaxScaler, deMinMax, complx2real, standardizeScaler, deStandardize, rmsScaler, deRMS      # Domain_Adversarial/helper/utils.py
 
 
 # ----------------------------------------------------------------------------
@@ -462,9 +466,10 @@ def to_structured(H: np.ndarray) -> np.ndarray:
 # ----------------------------------------------------------------------------
 def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray,
                      lower_range: int, clip_extrap: bool = False,
-                     pilot_bounds: tuple = None, standardize: bool = False):
+                     pilot_bounds: tuple = None, standardize: bool = False,
+                     rms_norm: bool = False):
     """
-    Convert complex batches to scaled or standardized real-valued TF tensors.
+    Convert complex batches to scaled, standardized, or RMS-normalized real-valued TF tensors.
     """
     x = complx2real(to_structured(H_in_batch))
     y = complx2real(to_structured(H_perf_batch))
@@ -490,7 +495,11 @@ def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray,
         
         x = tf.stack([real_clipped, imag_clipped], axis=-1)
 
-    if standardize:
+    if rms_norm:
+        x_scaled, rms_val = rmsScaler(x)
+        y_scaled, _       = rmsScaler(y, rms_pre=rms_val)
+        x_val1, x_val2    = rms_val, None
+    elif standardize:
         x_scaled, x_val1, x_val2 = standardizeScaler(x)
         y_scaled, _,    _        = standardizeScaler(y, mean_pre=x_val1, std_pre=x_val2)
     else:
@@ -699,7 +708,7 @@ def save_loss_plot_pdf(history: dict, save_dir: str):
         print(f'[PDF Export Warning] Failed to export loss history plots: {e}')
 
 
-def compute_combined_loss(y_true, y_pred, loss_fn, lower_range, ssim_weight, standardize=False):
+def compute_combined_loss(y_true, y_pred, loss_fn, lower_range, ssim_weight, standardize=False, rms_norm=False):
     """
     Computes a combined loss of MSE and SSIM:
       total_loss = (1 - ssim_weight) * MSE + ssim_weight * (1 - SSIM)
@@ -708,7 +717,7 @@ def compute_combined_loss(y_true, y_pred, loss_fn, lower_range, ssim_weight, sta
     mse_val = loss_fn(y_true, y_pred)
     
     # 2. SSIM Loss
-    if standardize:
+    if standardize or rms_norm:
         max_val = tf.reduce_max(y_true) - tf.reduce_min(y_true)
         max_val = tf.maximum(max_val, 1e-8)
     else:
@@ -726,13 +735,13 @@ def compute_combined_loss(y_true, y_pred, loss_fn, lower_range, ssim_weight, sta
 # Training step (compiled for speed)
 # ----------------------------------------------------------------------------
 @tf.function
-def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim_weight, standardize):
+def _train_step(model, x_scaled, y_scaled, optimizer, loss_fn, lower_range, ssim_weight, standardize, rms_norm=False):
     with tf.GradientTape() as tape:
         residual, _  = model(x_scaled, training=True)
         x_corrected  = x_scaled + residual
         
         # Compute combined loss components
-        combined_l, mse_l, ssim_l = compute_combined_loss(y_scaled, x_corrected, loss_fn, lower_range, ssim_weight, standardize)
+        combined_l, mse_l, ssim_l = compute_combined_loss(y_scaled, x_corrected, loss_fn, lower_range, ssim_weight, standardize, rms_norm=rms_norm)
         
         reg_loss     = 0.001 * tf.reduce_mean(tf.square(residual))
         total_loss   = combined_l + reg_loss
@@ -752,7 +761,8 @@ def infer_channel(model: CNNGenerator,
                   batch_size: int, lower_range: int,
                   clip_extrap: bool = False,
                   pilot_bounds: tuple = None,
-                  standardize: bool = False) -> np.ndarray:
+                  standardize: bool = False,
+                  rms_norm: bool = False) -> np.ndarray:
     """
     Run the trained model on a full dataset and return the predicted
     complex channel of shape [N, n_subc, n_symb].
@@ -765,10 +775,12 @@ def infer_channel(model: CNNGenerator,
         sl   = slice(i * batch_size, (i + 1) * batch_size)
         x_sc, _, x_val1, x_val2 = preprocess_batch(H_perf[sl], H_in[sl], lower_range,
                                                    clip_extrap=clip_extrap, pilot_bounds=pilot_bounds,
-                                                   standardize=standardize)
+                                                   standardize=standardize, rms_norm=rms_norm)
         residual, _ = model(x_sc, training=False)
         x_corr      = x_sc + residual
-        if standardize:
+        if rms_norm:
+            x_denorm = deRMS(x_corr, x_val1)
+        elif standardize:
             x_denorm = deStandardize(x_corr, x_val1, x_val2)
         else:
             x_denorm = deMinMax(x_corr, x_val1, x_val2, lower_range=lower_range)
@@ -780,10 +792,12 @@ def infer_channel(model: CNNGenerator,
         sl   = slice(steps * batch_size, N)
         x_sc, _, x_val1, x_val2 = preprocess_batch(H_perf[sl], H_in[sl], lower_range,
                                                    clip_extrap=clip_extrap, pilot_bounds=pilot_bounds,
-                                                   standardize=standardize)
+                                                   standardize=standardize, rms_norm=rms_norm)
         residual, _ = model(x_sc, training=False)
         x_corr      = x_sc + residual
-        if standardize:
+        if rms_norm:
+            x_denorm = deRMS(x_corr, x_val1)
+        elif standardize:
             x_denorm = deStandardize(x_corr, x_val1, x_val2)
         else:
             x_denorm = deMinMax(x_corr, x_val1, x_val2, lower_range=lower_range)
@@ -838,10 +852,14 @@ def main():
                         help='Final importance weight for SSIM loss at the last epoch.')
     parser.add_argument('--standardize', action='store_true',
                         help='Use sample-wise standardization (mean/var) instead of min-max scaling')
+    parser.add_argument('--rms', action='store_true',
+                        help='Use sample-wise Root Mean Square (RMS) power scaling instead of min-max scaling')
 
     args = parser.parse_args()
 
     # -- Validate ------------------------------------------------------------
+    if args.standardize and args.rms:
+        parser.error("Cannot specify both --standardize and --rms. Choose one normalization method.")
     if args.train_frac + args.val_frac >= 1.0:
         parser.error('--train-frac + --val-frac must be < 1.0 (remainder is test).')
     if not (0.0 <= args.ssim_weight_start <= 1.0) or not (0.0 <= args.ssim_weight_end <= 1.0):
@@ -862,11 +880,13 @@ def main():
 
     # -- Config banner --------------------------------------------------------
     test_frac = 1.0 - args.train_frac - args.val_frac
+    norm_name = 'RMS' if args.rms else ('Standardize' if args.standardize else 'MinMax')
     print('\n' + '=' * 58)
     print('  Single-Dataset CNN (Decaying MSE + SSIM Combination Loss)')
     print('=' * 58)
     print(f'  SNR               : {args.snr:+d} dB')
     print(f'  Input type        : {args.input_type}')
+    print(f'  Normalization     : {norm_name}')
     print(f'  Epochs            : {args.epochs}')
     print(f'  Batch size        : {args.batch_size}')
     print(f'  Learning rate     : {args.lr}')
@@ -920,7 +940,12 @@ def main():
     else:
         ssim_start_str = str(args.ssim_weight_start).replace('.', '_')
         ssim_end_str = str(args.ssim_weight_end).replace('.', '_')
-        suffix = 'standardize' if args.standardize else 'ssim_decay'
+        if args.rms:
+            suffix = 'rms'
+        elif args.standardize:
+            suffix = 'standardize'
+        else:
+            suffix = 'ssim_decay'
         save_dir = os.path.join(THIS_DIR, 'trained_models',
                                 f'SNR_{args.snr}dB_{args.input_type}_{suffix}_s{ssim_start_str}_e{ssim_end_str}')
     os.makedirs(save_dir, exist_ok=True)
@@ -947,8 +972,9 @@ def main():
     print(f'[Train] {args.epochs} epochs  |  {n_train_batches} batches/epoch\n')
     t_start = time.perf_counter()
 
-    # Convert standardize flag to TF constant
+    # Convert flags to TF constants
     standardize_tf = tf.constant(args.standardize, dtype=tf.bool)
+    rms_tf         = tf.constant(args.rms, dtype=tf.bool)
 
     for epoch in range(args.epochs):
         idx_e = np.random.default_rng(epoch).permutation(idx_train)
@@ -972,9 +998,9 @@ def main():
             batch_idx = idx_e[b * args.batch_size:(b + 1) * args.batch_size]
             h_p = H_perfect[batch_idx]
             h_i = H_input[batch_idx]
-            x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range, clip_extrap=args.clip_extrap, pilot_bounds=pilot_bounds, standardize=args.standardize)
+            x_sc, y_sc, _, _ = preprocess_batch(h_p, h_i, lower_range, clip_extrap=args.clip_extrap, pilot_bounds=pilot_bounds, standardize=args.standardize, rms_norm=args.rms)
             
-            total_l, mse_l, ssim_l = _train_step(model, x_sc, y_sc, optimizer, loss_fn, lower_range, ssim_weight_tf, standardize_tf)
+            total_l, mse_l, ssim_l = _train_step(model, x_sc, y_sc, optimizer, loss_fn, lower_range, ssim_weight_tf, standardize_tf, rms_norm=rms_tf)
             ep_train_loss += total_l.numpy()
             ep_train_mse  += mse_l.numpy()
             ep_train_ssim += ssim_l.numpy()
@@ -992,12 +1018,12 @@ def main():
             batch_idx = idx_val[b * args.batch_size:(b + 1) * args.batch_size]
             h_p = H_perfect[batch_idx]
             h_i = H_input[batch_idx]
-            x_sc, y_sc, x_val1, x_val2 = preprocess_batch(h_p, h_i, lower_range, clip_extrap=args.clip_extrap, pilot_bounds=pilot_bounds, standardize=args.standardize)
+            x_sc, y_sc, x_val1, x_val2 = preprocess_batch(h_p, h_i, lower_range, clip_extrap=args.clip_extrap, pilot_bounds=pilot_bounds, standardize=args.standardize, rms_norm=args.rms)
             residual, _ = model(x_sc, training=False)
             x_corr      = x_sc + residual
             
             # Use current epoch's SSIM weight for validation loss to match training
-            comb_l, mse_l, ssim_l = compute_combined_loss(y_sc, x_corr, loss_fn, lower_range, ssim_weight_tf, standardize=args.standardize)
+            comb_l, mse_l, ssim_l = compute_combined_loss(y_sc, x_corr, loss_fn, lower_range, ssim_weight_tf, standardize=args.standardize, rms_norm=args.rms)
             ep_val_loss += comb_l.numpy()
             ep_val_mse  += mse_l.numpy()
             ep_val_ssim += ssim_l.numpy()
@@ -1043,6 +1069,7 @@ def main():
                              f'snr              = {args.snr} dB\n'
                              f'input_type       = {args.input_type}\n'
                              f'standardize      = {args.standardize}\n'
+                             f'rms              = {args.rms}\n'
                              f'total_epochs     = {args.epochs}\n'
                              f'batch_size       = {args.batch_size}\n'
                              f'learning_rate    = {args.lr}\n'
@@ -1078,6 +1105,7 @@ def main():
         'snr':        args.snr,
         'input_type': args.input_type,
         'standardize': args.standardize,
+        'rms':        args.rms,
         'n_epochs':   args.epochs,
         'best_epoch': best_epoch,
         'ssim_weight_start': args.ssim_weight_start,
@@ -1096,7 +1124,8 @@ def main():
                                args.batch_size, lower_range,
                                clip_extrap=args.clip_extrap,
                                pilot_bounds=pilot_bounds,
-                               standardize=args.standardize)
+                               standardize=args.standardize,
+                               rms_norm=args.rms)
 
     mmse_val = compute_mmse(H_pred_val, H_perfect[idx_val])
     nmse_val = compute_nmse(H_pred_val, H_perfect[idx_val])
@@ -1116,7 +1145,8 @@ def main():
                                 args.batch_size, lower_range,
                                 clip_extrap=args.clip_extrap,
                                 pilot_bounds=pilot_bounds,
-                                standardize=args.standardize)
+                                standardize=args.standardize,
+                                rms_norm=args.rms)
 
     mmse_test = compute_mmse(H_pred_test, H_perfect[idx_test])
     nmse_test = compute_nmse(H_pred_test, H_perfect[idx_test])
@@ -1136,7 +1166,8 @@ def main():
                                  args.batch_size, lower_range,
                                  clip_extrap=args.clip_extrap,
                                  pilot_bounds=pilot_bounds,
-                                 standardize=args.standardize)
+                                 standardize=args.standardize,
+                                 rms_norm=args.rms)
 
     mmse_train = compute_mmse(H_pred_train, H_perfect[idx_train])
     nmse_train = compute_nmse(H_pred_train, H_perfect[idx_train])
@@ -1289,6 +1320,8 @@ def main():
         # --- Meta ---
         'snr':             args.snr,
         'input_type':      args.input_type,
+        'standardize':     args.standardize,
+        'rms':             args.rms,
         'n_train':         len(idx_train),
         'n_val':           len(idx_val),
         'n_test':          len(idx_test),
@@ -1423,7 +1456,7 @@ def main():
                 "========================================================================\n"
                 "FINAL EVALUATION METRICS COMPARISON\n"
                 "========================================================================\n"
-                f"SNR: {args.snr} dB | Input Type: {args.input_type} | SSIM Weight: {args.ssim_weight_start:.3f} -> {args.ssim_weight_end:.3f}\n"
+                f"SNR: {args.snr} dB | Input Type: {args.input_type} | Normalization: {norm_name} | SSIM Weight: {args.ssim_weight_start:.3f} -> {args.ssim_weight_end:.3f}\n"
                 f"Total Execution Time: {elapsed_total:.1f} s\n\n"
             )
             
