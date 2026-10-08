@@ -252,7 +252,7 @@ function results = syn_syn_compare_multiModels(folders, folder_labels, output_fo
     hold off;
 
     mse_pdf_path = fullfile(output_folder, 'MSE_comparison.pdf');
-    try exportgraphics(fig1, mse_pdf_path, 'ContentType', 'vector'); catch, saveas(fig1, mse_pdf_path); end
+    save_pdf_and_png(fig1, mse_pdf_path);
     safe_printf('Saved MSE plot: %s\n', mse_pdf_path);
     close(fig1);
 
@@ -300,7 +300,7 @@ function results = syn_syn_compare_multiModels(folders, folder_labels, output_fo
     hold off;
 
     nmse_pdf_path = fullfile(output_folder, 'NMSE_comparison.pdf');
-    try exportgraphics(fig2, nmse_pdf_path, 'ContentType', 'vector'); catch, saveas(fig2, nmse_pdf_path); end
+    save_pdf_and_png(fig2, nmse_pdf_path);
     safe_printf('Saved NMSE plot: %s\n', nmse_pdf_path);
     close(fig2);
 
@@ -348,7 +348,7 @@ function results = syn_syn_compare_multiModels(folders, folder_labels, output_fo
     hold off;
 
     ssim_pdf_path = fullfile(output_folder, 'SSIM_comparison.pdf');
-    try exportgraphics(fig3, ssim_pdf_path, 'ContentType', 'vector'); catch, saveas(fig3, ssim_pdf_path); end
+    save_pdf_and_png(fig3, ssim_pdf_path);
     safe_printf('Saved SSIM plot: %s\n', ssim_pdf_path);
     close(fig3);
 
@@ -396,7 +396,7 @@ function results = syn_syn_compare_multiModels(folders, folder_labels, output_fo
     hold off;
 
     ber_pdf_path = fullfile(output_folder, 'BER_comparison.pdf');
-    try exportgraphics(fig4, ber_pdf_path, 'ContentType', 'vector'); catch, saveas(fig4, ber_pdf_path); end
+    save_pdf_and_png(fig4, ber_pdf_path);
     safe_printf('Saved BER plot: %s\n', ber_pdf_path);
     close(fig4);
 
@@ -682,5 +682,30 @@ function s_out = truncate_str(s_in, max_len)
         s_out = [s_in(1:max_len-3) '...'];
     else
         s_out = s_in;
+    end
+end
+
+function save_pdf_and_png(fig_handle, pdf_path)
+    % 1. Save vector PDF for publication / manuscript
+    try
+        exportgraphics(fig_handle, pdf_path, 'ContentType', 'vector');
+    catch
+        try
+            saveas(fig_handle, pdf_path);
+        catch
+            warning('Could not export PDF figure to %s', pdf_path);
+        end
+    end
+
+    % 2. Save high-res 300 DPI PNG with identical name for worklogs and visual preview
+    png_path = regexprep(pdf_path, '\.pdf$', '.png', 'ignorecase');
+    try
+        exportgraphics(fig_handle, png_path, 'Resolution', 300);
+    catch
+        try
+            saveas(fig_handle, png_path);
+        catch
+            warning('Could not export PNG figure to %s', png_path);
+        end
     end
 end

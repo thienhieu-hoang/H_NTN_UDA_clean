@@ -476,7 +476,7 @@ function save_struct = process_single_batch(batch_folder, labelname)
     hold off;
 
     ber_pdf_path = fullfile(batch_folder, 'BER_comparison.pdf');
-    try exportgraphics(fig1, ber_pdf_path, 'ContentType', 'vector'); catch, try saveas(fig1, ber_pdf_path); catch; end; end
+    save_pdf_and_png(fig1, ber_pdf_path);
     fprintf('Saved BER figure: %s\n', ber_pdf_path);
     close(fig1);
 
@@ -496,7 +496,7 @@ function save_struct = process_single_batch(batch_folder, labelname)
     hold off;
 
     nmse_pdf_path = fullfile(batch_folder, 'NMSE_comparison.pdf');
-    try exportgraphics(fig2, nmse_pdf_path, 'ContentType', 'vector'); catch, try saveas(fig2, nmse_pdf_path); catch; end; end
+    save_pdf_and_png(fig2, nmse_pdf_path);
     fprintf('Saved NMSE figure: %s\n', nmse_pdf_path);
     close(fig2);
 
@@ -517,7 +517,7 @@ function save_struct = process_single_batch(batch_folder, labelname)
     hold off;
 
     ssim_pdf_path = fullfile(batch_folder, 'SSIM_comparison.pdf');
-    try exportgraphics(fig3, ssim_pdf_path, 'ContentType', 'vector'); catch, try saveas(fig3, ssim_pdf_path); catch; end; end
+    save_pdf_and_png(fig3, ssim_pdf_path);
     fprintf('Saved SSIM figure: %s\n', ssim_pdf_path);
     close(fig3);
 
@@ -537,7 +537,7 @@ function save_struct = process_single_batch(batch_folder, labelname)
     hold off;
 
     mse_pdf_path = fullfile(batch_folder, 'MSE_comparison.pdf');
-    try exportgraphics(fig4, mse_pdf_path, 'ContentType', 'vector'); catch, try saveas(fig4, mse_pdf_path); catch; end; end
+    save_pdf_and_png(fig4, mse_pdf_path);
     fprintf('Saved MSE figure: %s\n', mse_pdf_path);
     close(fig4);
 
@@ -567,6 +567,19 @@ function save_struct = process_single_batch(batch_folder, labelname)
     mat_out_path = fullfile(batch_folder, 'synthesized_results.mat');
     save(mat_out_path, '-struct', 'save_struct');
     fprintf('Saved synthesized MAT file: %s\n', mat_out_path);
+
+    % Save synthesized JSON file
+    json_out_path = fullfile(batch_folder, 'synthesized_results.json');
+    try
+        fid_json = fopen(json_out_path, 'w');
+        if fid_json ~= -1
+            fwrite(fid_json, jsonencode(save_struct, 'PrettyPrint', true));
+            fclose(fid_json);
+            fprintf('Saved synthesized JSON file: %s\n', json_out_path);
+        end
+    catch ME_json
+        warning('Failed to save JSON file: %s', ME_json.message);
+    end
 
     % Save Markdown Report
     md_path = fullfile(batch_folder, 'simulation_results.md');
@@ -644,6 +657,31 @@ function arr = align_channel_matrix(arr, nSubc, nSymb)
     if sz(1) == nSubc && sz(2) == nSymb
         arr = permute(arr, [3, 1, 2]);
         return;
+    end
+end
+
+function save_pdf_and_png(fig_handle, pdf_path)
+    % 1. Save vector PDF for publication / manuscript
+    try
+        exportgraphics(fig_handle, pdf_path, 'ContentType', 'vector');
+    catch
+        try
+            saveas(fig_handle, pdf_path);
+        catch
+            warning('Could not export PDF figure to %s', pdf_path);
+        end
+    end
+
+    % 2. Save high-res 300 DPI PNG with identical name for worklogs and visual preview
+    png_path = regexprep(pdf_path, '\.pdf$', '.png', 'ignorecase');
+    try
+        exportgraphics(fig_handle, png_path, 'Resolution', 300);
+    catch
+        try
+            saveas(fig_handle, png_path);
+        catch
+            warning('Could not export PNG figure to %s', png_path);
+        end
     end
 end
 

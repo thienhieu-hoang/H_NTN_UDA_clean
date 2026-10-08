@@ -1,0 +1,5 @@
+Folders loaded and plotted in this multi-model comparison:
+  - Legend Label: LI+DnCNN RMS inferred
+    Source Path:  C:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/inference/LIpseudo13x3_A100_70deg__DUR300_30deg_2p18e9_600kmm_30kHz/LI_DnCNN_rms
+  - Legend Label: LS+Transformer RMS inferred
+    Source Path:  C:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/inference/LIpseudo13x3_A100_70deg__DUR300_30deg_2p18e9_600kmm_30kHz/LS_Attention_rms
