@@ -43,56 +43,14 @@ $datasetDir = "C:\Users\AT30890\Hoctap\1_Hprediction\working\H_predict_NTN\Hest_
 
 # 4. List the models - the names of subfolders
 $models = @(
-    # "LI_cGAN",
-    # "LI_cGAN_standardize",
-    # "LI_DnCNN",
-    # "LI_DnCNN_standardize",
-    # "LI_DnCNN_Attention",
-    # "LI_DnCNN_Attention_standardize",
-    # "LI_DnCNN_AxialAttention",
-    # "LI_DnCNN_AxialAttention_standardize",
-    # "LI_DnCNN_CrossAttention",
-    # "LI_DnCNN_CrossAttention_standardize",
-    "LS_Attention",
-    "LS_Attention_standardize"
-    # "LS_Attention_AxialAttention",
-    # "LS_Attention_AxialAttention_standardize",
-    # "LS_Attention_cGAN",
-    # "LS_Attention_cGAN_standardize",
-    # "LS_Attention_DualDomain",
-    # "LS_Attention_DualDomain_standardize",
-    # "LS_Attention_ResidualRefine",
-    # "LS_Attention_ResidualRefine_standardize",
-    # "LS_Attention_UNetRefine",
-    # "LS_Attention_UNetRefine_standardize",
-    # "LS_DnCNN_Attention"
+    "LI_DnCNN_rms",
+    "LS_Attention_rms"
 )
 
 # Corresponding labels/legend names for evaluation
 $labels = @(
-    # "LI+cGAN Inferred",
-    # "LI+cGAN Std Inferred",
-    # "LI+DnCNN Inferred",
-    # "LI+DnCNN Std Inferred",
-    # "LI+DnCNN+Transformer Inferred",
-    # "LI+DnCNN+Transformer Std Inferred",
-    # "LI+DnCNN+AxialTransformer Inferred",
-    # "LI+DnCNN+AxialTransformer Std Inferred",
-    # "LI+DnCNN+CrossTransformer Inferred",
-    # "LI+DnCNN+CrossTransformer Std Inferred",
-    "LS+Transformer Inferred",
-    "LS+Transformer Std Inferred"
-    # "LS+Transformer+AxialTransformer Inferred",
-    # "LS+Transformer+AxialTransformer Std Inferred",
-    # "LS+Transformer+cGAN Inferred",
-    # "LS+Transformer+cGAN Std Inferred",
-    # "LS+Transformer+DualDomain Inferred",
-    # "LS+Transformer+DualDomain Std Inferred",
-    # "LS+Transformer+ResidualTransformer Inferred",
-    # "LS+Transformer+ResidualTransformer Std Inferred",
-    # "LS+Transformer+UNetTransformer Inferred",
-    # "LS+Transformer+UNetTransformer Std Inferred",
-    # "LS+Transformer+DnCNN Inferred"
+    "LI+DnCNN RMS inferred",
+    "LS+Transformer RMS inferred"
 )
 
 # Rerun flags (must match $models length):
@@ -206,7 +164,8 @@ for ($i = 0; $i -lt $models.Length; $i++) {
 
     if ($alreadyInferred -and $forceInfer) {
         Write-Output "  Status       : [RERUN] Results exist, but rerunInfer = 1. Re-running inference..."
-    } else {
+    }
+    else {
         Write-Output "  Status       : [NEW] Running Python ONNX inference..."
     }
     Write-Output "------------------------------------------------------------"
@@ -270,7 +229,8 @@ for ($i = 0; $i -lt $models.Length; $i++) {
 
     if ($alreadySynthesized -and $forceSyn) {
         Write-Output "  Status       : [RERUN] Results exist, but rerunSyn = 1. Overwriting..."
-    } else {
+    }
+    else {
         Write-Output "  Status       : [NEW] Running MATLAB syn_metrics_withBER..."
     }
     Write-Output "------------------------------------------------------------"
@@ -304,14 +264,16 @@ for ($i = 0; $i -lt $models.Length; $i++) {
     if (Test-Path $synMat) {
         $validCompFolders += $modelFolder
         $validLabels += $label
-    } else {
+    }
+    else {
         Write-Warning "Excluding '$model' from comparison: '$synMat' not found."
     }
 }
 
 if ($validCompFolders.Length -eq 0) {
     Write-Error "No valid 'synthesized_results.mat' found among configured models! Skipping overall comparison."
-} else {
+}
+else {
     $maxNum = 0
     if (Test-Path $parentPath) {
         $subDirs = Get-ChildItem -Path $parentPath -Directory -Filter "syn_*"
