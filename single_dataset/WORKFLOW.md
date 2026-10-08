@@ -48,3 +48,52 @@ To generate comparative plots across models:
    ```
 4. Consolidated comparative curves (BER, NMSE, MSE, SSIM) and summary tables are saved to:
    `<dataset>\syn\syn_<n>\` (auto-increments to `syn_1`, `syn_2`, etc.)
+
+---
+
+## Evaluation Scripts Comparison & Breakdown
+
+Below is a breakdown of the differences between the evaluation scripts in this directory and how they combine individual stages:
+
+| Script | Git Poll Wait (`done_train.md`) | Per-Model Eval (`syn_results_withBER.m`) | Multi-Model Comparison (`syn_syn_results_.m`) | Skip/Rerun Cache Control (`$rerun`) | Purpose & Notes |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| **`cmd_syn_metrics.ps1`** | ❌ No | ✅ **Yes** | ❌ No | ❌ No (runs all listed) | **Step 1 Only**: Generates/updates `<prefix>_synthesize/synthesized_results.mat` for each model independently. |
+| **`cmd_synSyn_results.ps1`** | ❌ No | ❌ No (requires existing `.mat`) | ✅ **Yes** | N/A | **Step 2 Only**: Assumes `.mat` files already exist. Reads all selected models and produces combined comparison plots under `<dataset>/syn/syn_<n>/`. |
+| **`cmd_auto_syn.ps1`** *(Recommended)* | ✅ Optional (`$waitForTrigger`) | ✅ **Yes** | ✅ **Yes** | ✅ **Yes** (`$rerun` array) | **All-in-One Full Pipeline**: Combines Step 1 + Step 2 with smart caching (`$rerun`) and optional trigger polling (`$waitForTrigger = $true/$false`). Safely skips already-calculated models to quickly produce comparison plots. |
+| **`cmd_auto_syn_metrics_synSyn.ps1`** | ✅ Mandatory ($true) | ✅ **Yes** | ✅ **Yes** | ❌ No (always reruns) | **Older/Legacy automated pipeline**: Similar to `cmd_auto_syn.ps1` but lacks `$rerun` caching flag and `$waitForTrigger` toggle (always blocks on `done_train.md`). |
+| **`cmd_auto_syn_metrics_synSyn_all.ps1`** | N/A (batch runner) | N/A | N/A | N/A | **Batch meta-runner**: Sequentially executes `cmd_auto_syn_metrics_synSyn1.ps1`, `cmd_auto_syn_metrics_synSyn2.ps1`, and `cmd_auto_syn_metrics_synSyn3.ps1` in series. |
+
+### Visual Pipeline Overview
+
+```
+[Remote Training Finishes]
+            │
+            ▼
+┌─────────────────────────┐
+│ Git Polling Trigger     │ ◄── Enabled in cmd_auto_syn.ps1 (optional) & cmd_auto_syn_metrics_synSyn.ps1
+│ (done_train.md)         │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────────────────────────────────────┐
+│ Step 1: Per-Model Synthesis (syn_results_withBER.m)     │ ◄── Standalone: cmd_syn_metrics.ps1
+│ Computes MSE, NMSE, SSIM, BER across SNRs               │
+│ Output: <dataset>/<model>/<prefix>_synthesize/          │
+│         └── synthesized_results.mat                     │
+└───────────┬─────────────────────────────────────────────┘
+            │
+            ▼
+┌─────────────────────────────────────────────────────────┐
+│ Step 2: Multi-Model Comparison (syn_syn_results_.m)     │ ◄── Standalone: cmd_synSyn_results.ps1
+│ Merges all models into unified comparison curves        │
+│ Output: <dataset>/syn/syn_<n>/                          │
+│         ├── BER_comparison.pdf                          │
+│         ├── NMSE_comparison.pdf, MSE, SSIM...           │
+└─────────────────────────────────────────────────────────┘
+            ▲
+            │
+   Combined together with
+ caching ($rerun) in:
+   cmd_auto_syn.ps1
+```
+
