@@ -478,6 +478,19 @@ function save_struct = process_input_type(dataset_dir, input_type, ...
     save(mat_out_path, '-struct', 'save_struct');
     fprintf('Saved synthesized MAT file: %s\n', mat_out_path);
 
+    % Save synthesized JSON file
+    json_out_path = fullfile(output_dir, 'synthesized_results.json');
+    try
+        fid_json = fopen(json_out_path, 'w');
+        if fid_json ~= -1
+            fwrite(fid_json, jsonencode(save_struct, 'PrettyPrint', true));
+            fclose(fid_json);
+            fprintf('Saved synthesized JSON file: %s\n', json_out_path);
+        end
+    catch ME_json
+        warning('Failed to save JSON file: %s', ME_json.message);
+    end
+
     % =========================================================================
     % 3. PLOT AND EXPORT PDF FIGURES USING CONFIGURATIONS
     % =========================================================================
@@ -547,8 +560,9 @@ function save_struct = process_input_type(dataset_dir, input_type, ...
     fprintf('Synthesized output saved to: %s\n\n', output_dir);
 end
 
-%% Helper function to safely export PDF figures
+%% Helper function to safely export PDF and PNG figures
 function save_pdf_figure(fig_handle, pdf_path)
+    % 1. Save vector PDF for publication / manuscript
     try
         exportgraphics(fig_handle, pdf_path, 'ContentType', 'vector');
     catch
@@ -556,6 +570,18 @@ function save_pdf_figure(fig_handle, pdf_path)
             saveas(fig_handle, pdf_path);
         catch
             warning('Could not export PDF figure to %s', pdf_path);
+        end
+    end
+
+    % 2. Save high-res 300 DPI PNG with identical name for worklogs and visual preview
+    png_path = regexprep(pdf_path, '\.pdf$', '.png', 'ignorecase');
+    try
+        exportgraphics(fig_handle, png_path, 'Resolution', 300);
+    catch
+        try
+            saveas(fig_handle, png_path);
+        catch
+            warning('Could not export PNG figure to %s', png_path);
         end
     end
 end

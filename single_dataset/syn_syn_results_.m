@@ -655,8 +655,9 @@ function rgb = hex2rgb(hex_str)
     end
 end
 
-%% Helper function to safely export PDF figures
+%% Helper function to safely export PDF and PNG figures
 function save_pdf_figure(fig_handle, pdf_path)
+    % 1. Save vector PDF for publication / manuscript
     try
         exportgraphics(fig_handle, pdf_path, 'ContentType', 'vector');
     catch
@@ -664,6 +665,18 @@ function save_pdf_figure(fig_handle, pdf_path)
             saveas(fig_handle, pdf_path);
         catch
             warning('Could not export PDF figure to %s', pdf_path);
+        end
+    end
+
+    % 2. Save high-res 300 DPI PNG with identical name for worklogs and visual preview
+    png_path = regexprep(pdf_path, '\.pdf$', '.png', 'ignorecase');
+    try
+        exportgraphics(fig_handle, png_path, 'Resolution', 300);
+    catch
+        try
+            saveas(fig_handle, png_path);
+        catch
+            warning('Could not export PNG figure to %s', png_path);
         end
     end
 end

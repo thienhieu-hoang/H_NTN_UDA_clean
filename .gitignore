@@ -13,3 +13,6 @@ __pycache__/
 Distribution/
 single_dataset/trained_models/
 .vscode/
+WORKLOG.md
+.obsidian/
+.agent/
