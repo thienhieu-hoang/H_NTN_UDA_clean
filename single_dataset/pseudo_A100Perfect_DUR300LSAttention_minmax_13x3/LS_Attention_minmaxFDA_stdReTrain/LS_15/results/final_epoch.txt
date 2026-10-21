@@ -1,0 +1,32 @@
+=== FINAL EPOCH EVALUATION RESULTS ===
+SNR (dB):             15
+Input Type:           ls
+Loss Type:            combined
+Standardize:          True
+RMS:                  False
+Total Execution Time: 240.8 s
+Best Training Epoch:  200
+
+--- TRAIN SET METRICS ---
+LI Benchmark MMSE:    4.371725e-20
+HA02 Output MMSE:     4.947113e-21
+LI Benchmark NMSE:    6.801948e-02 (-11.67 dB)
+HA02 Output NMSE:     7.697191e-03 (-21.14 dB)
+LI Benchmark SSIM:    0.6076
+HA02 Output SSIM:     0.9701
+
+--- VALIDATION SET METRICS ---
+LI Benchmark MMSE:    4.036735e-20
+HA02 Output MMSE:     5.574830e-21
+LI Benchmark NMSE:    5.398499e-02 (-12.68 dB)
+HA02 Output NMSE:     7.455460e-03 (-21.28 dB)
+LI Benchmark SSIM:    0.6018
+HA02 Output SSIM:     0.8346
+
+--- TEST SET METRICS ---
+LI Benchmark MMSE:    6.387868e-20
+HA02 Output MMSE:     3.616314e-20
+LI Benchmark NMSE:    8.992994e-02 (-10.46 dB)
+HA02 Output NMSE:     5.091134e-02 (-12.93 dB)
+LI Benchmark SSIM:    0.6076
+HA02 Output SSIM:     0.8313
