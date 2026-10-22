@@ -445,15 +445,48 @@ def deStandardize_ha02(y_scaled, x_mean, x_std):
     return y_scaled * scale_bc + shift_bc
 
 
-def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray, lower_range: int = -1, standardize: bool = False):
-    """Convert complex channel batches to scaled real tensors."""
+def rmsScaler_ha02(x, y):
+    """
+    Scale sample-wise by Root Mean Square (RMS) computed strictly from input x:
+    - x: (B, 88, 2) pilot inputs
+    - y: (B, 132, 14, 2) full channel grids
+    """
+    B = tf.shape(x)[0]
+    power_per_elem = tf.reduce_sum(tf.square(x), axis=-1)  # [B, 88]
+    mean_power = tf.reduce_mean(power_per_elem, axis=1)    # [B]
+    rms = tf.sqrt(tf.clip_by_value(mean_power, 1e-30, tf.float32.max))  # [B]
+
+    rms_bc_x = tf.reshape(rms, [B, 1, 1])
+    rms_bc_y = tf.reshape(rms, [B, 1, 1, 1])
+
+    x_scaled = x / rms_bc_x
+    y_scaled = y / rms_bc_y
+    return x_scaled, y_scaled, rms
+
+
+def deRMS_ha02(y_scaled, rms):
+    """Invert sample-wise RMS scaling for HA02 predicted channel grids."""
+    B = tf.shape(y_scaled)[0]
+    rms_bc = tf.reshape(rms, [B, 1, 1, 1])
+    return y_scaled * rms_bc
+
+
+def preprocess_batch(H_perf_batch: np.ndarray, H_in_batch: np.ndarray, lower_range: int = -1,
+                     standardize: bool = False, rms: bool = False, norm_mode: str = None):
+    """Convert complex channel batches to scaled real tensors supporting minmax, std, and rms."""
     y = tf.cast(complx2real(H_perf_batch), tf.float32)
     x = tf.cast(complx2real(H_in_batch), tf.float32)
-    if standardize:
+    
+    mode = norm_mode.lower() if norm_mode else ('rms' if rms else ('standardize' if standardize else 'minmax'))
+    if mode == 'rms':
+        x_sc, y_sc, rms_val = rmsScaler_ha02(x, y)
+        return x_sc, y_sc, rms_val, None
+    elif mode == 'standardize':
         x_sc, y_sc, val1, val2 = standardizeScaler_ha02(x, y)
+        return x_sc, y_sc, val1, val2
     else:
         x_sc, y_sc, val1, val2 = minmaxScaler_ha02(x, y, lower_range)
-    return x_sc, y_sc, val1, val2
+        return x_sc, y_sc, val1, val2
 
 
 # =============================================================================
@@ -659,17 +692,21 @@ def split_indices(N: int, train_frac: float = 0.70, val_frac: float = 0.15, seed
 # =============================================================================
 # 8. INFERENCE & FEATURE EXTRACTION HELPERS
 # =============================================================================
-def infer_full_dataset(model, H_perf: np.ndarray, H_in: np.ndarray, batch_size: int = 16, lower_range: int = -1, standardize: bool = False):
+def infer_full_dataset(model, H_perf: np.ndarray, H_in: np.ndarray, batch_size: int = 16, lower_range: int = -1,
+                       standardize: bool = False, rms: bool = False, norm_mode: str = None):
     N = H_in.shape[0]
     preds = []
+    mode = norm_mode.lower() if norm_mode else ('rms' if rms else ('standardize' if standardize else 'minmax'))
     for start in range(0, N, batch_size):
         end = min(start + batch_size, N)
         x_batch = H_in[start:end]
         y_batch = H_perf[start:end]
         
-        x_sc, _, x_val1, x_val2 = preprocess_batch(y_batch, x_batch, lower_range, standardize=standardize)
+        x_sc, _, x_val1, x_val2 = preprocess_batch(y_batch, x_batch, lower_range, norm_mode=mode)
         pred_sc = model(x_sc, training=False)
-        if standardize:
+        if mode == 'rms':
+            pred_real = deRMS_ha02(pred_sc, x_val1).numpy()
+        elif mode == 'standardize':
             pred_real = deStandardize_ha02(pred_sc, x_val1, x_val2).numpy()
         else:
             pred_real = deMinMax_ha02(pred_sc, x_val1, x_val2, lower_range=lower_range).numpy()
@@ -677,17 +714,19 @@ def infer_full_dataset(model, H_perf: np.ndarray, H_in: np.ndarray, batch_size: 
     return np.concatenate(preds, axis=0)
 
 
-def extract_features(model, H_in: np.ndarray, batch_size: int, selected_layers: list, lower_range: int = -1, standardize: bool = False):
+def extract_features(model, H_in: np.ndarray, batch_size: int, selected_layers: list, lower_range: int = -1,
+                     standardize: bool = False, rms: bool = False, norm_mode: str = None):
     N = H_in.shape[0]
     dummy_y = np.zeros((N, 132, 14), dtype=np.complex64)
     layer_feats = {lyr: [] for lyr in selected_layers}
+    mode = norm_mode.lower() if norm_mode else ('rms' if rms else ('standardize' if standardize else 'minmax'))
     
     for start in range(0, N, batch_size):
         end = min(start + batch_size, N)
         x_batch = H_in[start:end]
         y_batch = dummy_y[:end - start]
         
-        x_sc, _, _, _ = preprocess_batch(y_batch, x_batch, lower_range, standardize=standardize)
+        x_sc, _, _, _ = preprocess_batch(y_batch, x_batch, lower_range, norm_mode=mode)
         _, feats = model(x_sc, training=False, return_features=True, selected_layers=selected_layers)
         
         for lyr, f_t in zip(selected_layers, feats):
@@ -925,6 +964,7 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-3, help="Learning rate")
     parser.add_argument('--lower-range', type=int, default=-1, choices=[-1, 0], help="Min-max scaling lower range")
     parser.add_argument('--standardize', action='store_true', default=False, help="Use sample-wise zero-mean unit-variance standardization instead of min-max scaling")
+    parser.add_argument('--rms', action='store_true', default=False, help="Use sample-wise Root Mean Square (RMS) power scaling instead of min-max scaling")
     parser.add_argument('--save-features', action='store_true', default=SAVE_FEATURES, help="Extract & save intermediate features")
     parser.add_argument('--test-code', action='store_true', default=TEST_CODE, help="Fast sanity check")
     parser.add_argument('--no-gpu', action='store_true', help="Disable GPU execution")
@@ -934,6 +974,19 @@ def main():
     if args.no_gpu:
         os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
         print("[Config] GPU disabled by user.")
+
+    if args.standardize and args.rms:
+        parser.error("Cannot specify both --standardize and --rms. Choose one normalization method.")
+
+    if args.rms:
+        norm_mode = 'rms'
+        norm_str = "Root Mean Square (RMS)"
+    elif args.standardize:
+        norm_mode = 'standardize'
+        norm_str = "Standardize (Zero-Mean, Unit-Var)"
+    else:
+        norm_mode = 'minmax'
+        norm_str = f"Min-Max [{args.lower_range}, 1]"
 
     # Parse and validate extracted layers
     selected_layers = []
@@ -959,7 +1012,6 @@ def main():
     src_mat_path = get_mat_file(args.source_dir, args.snr)
     tgt_mat_path = get_mat_file(args.target_dir, args.snr)
 
-    norm_str = "Standardize (Zero-Mean, Unit-Var)" if args.standardize else f"Min-Max [{args.lower_range}, 1]"
     print("=" * 80)
     print(f"HA02 Attention Model | Mode: {'Source-Only' if args.only_source else 'Multi-Layer CORAL UDA'}")
     if not args.only_source:
@@ -1045,7 +1097,7 @@ def main():
     # =========================================================================
     # COMPILED GPU TRAINING STEPS
     # =========================================================================
-    ssim_max_val = 6.0 if args.standardize else (2.0 if args.lower_range == -1 else 1.0)
+    ssim_max_val = 4.0 if norm_mode == 'rms' else (6.0 if norm_mode == 'standardize' else (2.0 if args.lower_range == -1 else 1.0))
 
     @tf.function
     def _train_step_coral(x_src, y_src, x_tgt):
@@ -1093,8 +1145,8 @@ def main():
         # Feature Checkpointing at begin, mid, last
         if args.save_features and epoch in feature_checkpoint_epochs:
             stage = feature_checkpoint_epochs[epoch]
-            src_f = extract_features(model, H_in_src[idx_train_src], args.batch_size, selected_layers, args.lower_range, standardize=args.standardize)
-            tgt_f = extract_features(model, H_in_tgt[idx_train_tgt], args.batch_size, selected_layers, args.lower_range, standardize=args.standardize)
+            src_f = extract_features(model, H_in_src[idx_train_src], args.batch_size, selected_layers, args.lower_range, norm_mode=norm_mode)
+            tgt_f = extract_features(model, H_in_tgt[idx_train_tgt], args.batch_size, selected_layers, args.lower_range, norm_mode=norm_mode)
             for k, v in src_f.items():
                 saved_features[f"features_{stage}_{k}_src"] = v
             for k, v in tgt_f.items():
@@ -1117,8 +1169,8 @@ def main():
             s_idx = b * args.batch_size
             e_idx = s_idx + args.batch_size
             
-            x_src_b, y_src_b, _, _ = preprocess_batch(train_perf_src[s_idx:e_idx], train_in_src[s_idx:e_idx], args.lower_range, standardize=args.standardize)
-            x_tgt_b, y_tgt_b, _, _ = preprocess_batch(train_perf_tgt[s_idx:e_idx], train_in_tgt[s_idx:e_idx], args.lower_range, standardize=args.standardize)
+            x_src_b, y_src_b, _, _ = preprocess_batch(train_perf_src[s_idx:e_idx], train_in_src[s_idx:e_idx], args.lower_range, norm_mode=norm_mode)
+            x_tgt_b, y_tgt_b, _, _ = preprocess_batch(train_perf_tgt[s_idx:e_idx], train_in_tgt[s_idx:e_idx], args.lower_range, norm_mode=norm_mode)
 
             if args.only_source:
                 l_tot, l_est, l_cor = _train_step_source_only(x_src_b, y_src_b)
@@ -1140,10 +1192,10 @@ def main():
         # Track metrics (NMSE, MSE, SSIM) on train & val splits
         eval_interval = 1 if (args.n_epochs <= 50 or args.test_code) else 5
         if (epoch + 1) % eval_interval == 0 or epoch == args.n_epochs - 1:
-            pred_src_tr = infer_full_dataset(model, H_perf_src[eval_sub_src_tr], H_in_src[eval_sub_src_tr], args.batch_size, args.lower_range, standardize=args.standardize)
-            pred_src_val = infer_full_dataset(model, H_perf_src[idx_val_src], H_in_src[idx_val_src], args.batch_size, args.lower_range, standardize=args.standardize)
-            pred_tgt_tr = infer_full_dataset(model, H_perf_tgt[eval_sub_tgt_tr], H_in_tgt[eval_sub_tgt_tr], args.batch_size, args.lower_range, standardize=args.standardize)
-            pred_tgt_val = infer_full_dataset(model, H_perf_tgt[idx_val_tgt], H_in_tgt[idx_val_tgt], args.batch_size, args.lower_range, standardize=args.standardize)
+            pred_src_tr = infer_full_dataset(model, H_perf_src[eval_sub_src_tr], H_in_src[eval_sub_src_tr], args.batch_size, args.lower_range, norm_mode=norm_mode)
+            pred_src_val = infer_full_dataset(model, H_perf_src[idx_val_src], H_in_src[idx_val_src], args.batch_size, args.lower_range, norm_mode=norm_mode)
+            pred_tgt_tr = infer_full_dataset(model, H_perf_tgt[eval_sub_tgt_tr], H_in_tgt[eval_sub_tgt_tr], args.batch_size, args.lower_range, norm_mode=norm_mode)
+            pred_tgt_val = infer_full_dataset(model, H_perf_tgt[idx_val_tgt], H_in_tgt[idx_val_tgt], args.batch_size, args.lower_range, norm_mode=norm_mode)
 
             nmse_s_tr = compute_nmse_db(pred_src_tr, H_perf_src[eval_sub_src_tr])
             nmse_s_val = compute_nmse_db(pred_src_val, H_perf_src[idx_val_src])
@@ -1190,18 +1242,18 @@ def main():
     print("=" * 80)
 
     # 1. Source and Target Test Predictions
-    test_pred_src = infer_full_dataset(model, H_perf_src[idx_test_src], H_in_src[idx_test_src], args.batch_size, args.lower_range, standardize=args.standardize)
+    test_pred_src = infer_full_dataset(model, H_perf_src[idx_test_src], H_in_src[idx_test_src], args.batch_size, args.lower_range, norm_mode=norm_mode)
     test_nmse_db_src = compute_nmse_db(test_pred_src, H_perf_src[idx_test_src])
     test_mmse_src = compute_mmse(test_pred_src, H_perf_src[idx_test_src])
     test_ssim_src = compute_ssim_batch(test_pred_src, H_perf_src[idx_test_src])
 
-    test_pred_tgt = infer_full_dataset(model, H_perf_tgt[idx_test_tgt], H_in_tgt[idx_test_tgt], args.batch_size, args.lower_range, standardize=args.standardize)
+    test_pred_tgt = infer_full_dataset(model, H_perf_tgt[idx_test_tgt], H_in_tgt[idx_test_tgt], args.batch_size, args.lower_range, norm_mode=norm_mode)
     test_nmse_db_tgt = compute_nmse_db(test_pred_tgt, H_perf_tgt[idx_test_tgt])
     test_mmse_tgt = compute_mmse(test_pred_tgt, H_perf_tgt[idx_test_tgt])
     test_ssim_tgt = compute_ssim_batch(test_pred_tgt, H_perf_tgt[idx_test_tgt])
 
-    train_pred_src_sample = infer_full_dataset(model, H_perf_src[idx_train_src[:10]], H_in_src[idx_train_src[:10]], args.batch_size, args.lower_range, standardize=args.standardize)
-    train_pred_tgt_sample = infer_full_dataset(model, H_perf_tgt[idx_train_tgt[:10]], H_in_tgt[idx_train_tgt][:10], args.batch_size, args.lower_range, standardize=args.standardize)
+    train_pred_src_sample = infer_full_dataset(model, H_perf_src[idx_train_src[:10]], H_in_src[idx_train_src[:10]], args.batch_size, args.lower_range, norm_mode=norm_mode)
+    train_pred_tgt_sample = infer_full_dataset(model, H_perf_tgt[idx_train_tgt[:10]], H_in_tgt[idx_train_tgt][:10], args.batch_size, args.lower_range, norm_mode=norm_mode)
 
     print(f"  Source Domain -> NMSE: {test_nmse_db_src:.2f} dB | MMSE: {test_mmse_src:.6e} | SSIM: {test_ssim_src:.4f}")
     print(f"  Target Domain -> NMSE: {test_nmse_db_tgt:.2f} dB | MMSE: {test_mmse_tgt:.6e} | SSIM: {test_ssim_tgt:.4f}")
@@ -1265,6 +1317,8 @@ def main():
             f.write(f"SNR (dB):             {args.snr}\n")
             f.write(f"Input Type:           {args.type}\n")
             f.write(f"Normalization:        {norm_str}\n")
+            f.write(f"rms:                  {'true' if norm_mode == 'rms' else 'false'}\n")
+            f.write(f"standardize:          {'true' if norm_mode == 'standardize' else 'false'}\n")
             f.write(f"Domain Adaptation:    {'Source-Only' if args.only_source else 'CORAL UDA'}\n")
             f.write(f"CORAL Layers:         {selected_layers}\n")
             f.write(f"Total Execution Time: {total_time:.1f} s\n\n")
@@ -1305,7 +1359,9 @@ def main():
         'indices_test_target': idx_test_tgt,
         'snr': args.snr,
         'input_type': args.type,
-        'standardize': args.standardize,
+        'normalization': norm_mode,
+        'rms': (norm_mode == 'rms'),
+        'standardize': (norm_mode == 'standardize'),
         'coral_layers': np.array(selected_layers)
     }
     savemat(eval_path, eval_dict)
