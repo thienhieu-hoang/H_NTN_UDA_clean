@@ -1,0 +1,7 @@
+Folders loaded and plotted in this multi-model comparison:
+  - Legend Label: LS+Transformer minmaxFDA minmaxPreProcess inferred
+    Source Path:  C:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/inference/LSpseudo13x3_A100_70deg__DUR300_30deg_2p18e9_600kmm_30kHz/LS_Attention_minmaxFDA_minmaxReTrain
+  - Legend Label: LS+Transformer minmaxFDA RMSPreProcess inferred
+    Source Path:  C:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/inference/LSpseudo13x3_A100_70deg__DUR300_30deg_2p18e9_600kmm_30kHz/LS_Attention_minmaxFDA_rmsReTrain
+  - Legend Label: LS+Transformer minmaxFDA stdPreProcess inferred
+    Source Path:  C:/Users/AT30890/Hoctap/1_Hprediction/working/H_predict_NTN/Hest_NTN_UDA_clean/inference/LSpseudo13x3_A100_70deg__DUR300_30deg_2p18e9_600kmm_30kHz/LS_Attention_minmaxFDA_stdReTrain

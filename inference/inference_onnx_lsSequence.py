@@ -146,6 +146,32 @@ def de_standardize(x_normd, x_mean, x_std):
     x_std_b = x_std.reshape(reshape_dims)
     return x_normd * x_std_b + x_mean_b
 
+def rms_scaler(x):
+    """
+    Scale numpy array sample-wise by Root Mean Square (RMS).
+    x has shape (N, L, 2)
+    """
+    N = x.shape[0]
+    power_per_elem = np.sum(x**2, axis=-1)  # (N, L)
+    mean_power = np.mean(power_per_elem, axis=1)  # (N,)
+    rms = np.sqrt(np.clip(mean_power, 1e-30, None))  # (N,)
+    
+    reshape_dims = [N] + [1] * (x.ndim - 1)  # [N, 1, 1]
+    rms_b = rms.reshape(reshape_dims)
+    x_scaled = x / rms_b
+    return x_scaled, rms
+
+def de_rms(x_normd, rms):
+    """
+    Perform inverse sample-wise RMS scaling for x_normd.
+    x_normd has shape (N, H, W, 2)
+    rms has shape (N,)
+    """
+    N = x_normd.shape[0]
+    reshape_dims = [N] + [1] * (x_normd.ndim - 1)  # [N, 1, 1, 1]
+    rms_b = rms.reshape(reshape_dims)
+    return x_normd * rms_b
+
 
 def load_source_mat_file(mat_path):
     """
@@ -668,13 +694,50 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
         is_clip_extrap = str(clip_extrap).lower() == "true"
         print(f"[Manual override] Clip extrapolation: {is_clip_extrap}")
 
-    # Determine standardization scaling mode
-    if str(standardize).lower() == "auto":
-        is_standardize = "standardize" in os.path.basename(model_dir).lower()
-        print(f"[Auto-detect] Standardization: {is_standardize} (based on model folder name)")
-    else:
-        is_standardize = str(standardize).lower() == "true"
-        print(f"[Manual override] Standardization: {is_standardize}")
+    # Determine normalization scaling mode strictly matching training preprocessing
+    model_name_lower = os.path.basename(model_dir).lower()
+    norm_mode = None
+    
+    # Priority 1: Check final_epoch.txt training logs inside model directory (Absolute Ground Truth)
+    for root, _, files in os.walk(model_dir):
+        if "final_epoch.txt" in files:
+            fe_path = os.path.join(root, "final_epoch.txt")
+            try:
+                with open(fe_path, "r") as fe_f:
+                    fe_content = fe_f.read().lower()
+                    if re.search(r'rms\s*[:=]\s*true', fe_content):
+                        norm_mode = "rms"
+                    elif re.search(r'standardize\s*[:=]\s*true', fe_content):
+                        norm_mode = "standardize"
+                    elif re.search(r'standardize\s*[:=]\s*false', fe_content) and re.search(r'rms\s*[:=]\s*false', fe_content):
+                        norm_mode = "minmax"
+                if norm_mode is not None:
+                    print(f"[Auto-detect] Normalization Mode: '{norm_mode.upper()}' (verified directly from training log '{fe_path}')")
+                    break
+            except Exception:
+                pass
+
+    # Priority 2: Fall back to model folder naming if no training log is found
+    if norm_mode is None:
+        if str(standardize).lower() == "auto":
+            if "stdretrain" in model_name_lower:
+                norm_mode = "standardize"
+            elif "rmsretrain" in model_name_lower:
+                norm_mode = "rms"
+            elif "minmaxretrain" in model_name_lower:
+                norm_mode = "minmax"
+            elif "standardize" in model_name_lower or "_std" in model_name_lower:
+                norm_mode = "standardize"
+            elif "_rms" in model_name_lower or "rms" in model_name_lower:
+                norm_mode = "rms"
+            else:
+                norm_mode = "minmax"
+            print(f"[Auto-detect] Normalization Mode: '{norm_mode.upper()}' (parsed from folder name: '{os.path.basename(model_dir)}')")
+        else:
+            norm_mode = "standardize" if str(standardize).lower() == "true" else "minmax"
+            print(f"[Manual override] Normalization Mode: '{norm_mode.upper()}'")
+
+    is_standardize = (norm_mode == "standardize")
 
     print("\n" + "="*80)
     print("  ONNX Batch Inference for MATLAB Channels")
@@ -684,7 +747,7 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
     print(f"Output Directory : {out_dir if out_dir is not None else 'In-place (same as Dataset Directory)'}")
     print(f"Model Filename   : {model_name}")
     print(f"Clip Extrap Mode : {is_clip_extrap}")
-    print(f"Standardize Mode : {is_standardize}")
+    print(f"Normalization    : {norm_mode}")
     print(f"Output Key Mode  : {output_key}")
     print(f"Num Samples Limit: {num_samples if num_samples is not None else 'All'}")
     print("="*80 + "\n")
@@ -791,8 +854,10 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
         x = np.stack([H_in_pilots.real, H_in_pilots.imag], axis=-1).astype(np.float32)
         
         # Scaling sample-wise over the pilot elements
-        if is_standardize:
+        if norm_mode == "standardize":
             x_scaled, x_mean, x_std = standardize_scaler(x)
+        elif norm_mode == "rms":
+            x_scaled, x_rms = rms_scaler(x)
         else:
             x_scaled, x_min, x_max = minmax_scaler(x, lower_range=-1)
 
@@ -820,8 +885,10 @@ def run_inference(model_dir=MODEL_DIR, dataset_dir=DATASET_DIR, num_samples=NUM_
             continue
 
         # 7. Postprocess (Denormalization + Complex reconstruction)
-        if is_standardize:
+        if norm_mode == "standardize":
             x_denormed = de_standardize(y_pred_scaled, x_mean, x_std)
+        elif norm_mode == "rms":
+            x_denormed = de_rms(y_pred_scaled, x_rms)
         else:
             x_denormed = de_min_max(y_pred_scaled, x_min, x_max, lower_range=-1)
         H_est = x_denormed[..., 0] + 1j * x_denormed[..., 1]
@@ -958,7 +1025,7 @@ All variables are saved combined in **`inferredChannel.mat`** inside each target
 - **ONNX Model File**: {model_name}
 - **Number of Samples**: {num_samples if num_samples is not None else 'All'}
 - **Extrapolation Clipping**: {is_clip_extrap}
-- **Standardization**: {is_standardize}
+- **Normalization Mode**: {norm_mode}
 - **MATLAB Variable Key**: {out_key}
 """
         try:
