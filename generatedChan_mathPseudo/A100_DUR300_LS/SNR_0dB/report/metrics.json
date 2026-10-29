@@ -1,0 +1,22 @@
+{
+    "folder_path": "C:\\Users\\AT30890\\Hoctap\\1_Hprediction\\working\\H_predict_NTN\\Hest_NTN_UDA_clean\\generatedChan_mathPseudo\\A100_DUR300_LS\\SNR_0dB",
+    "N": 1024,
+    "n_sc": 132,
+    "n_sym": 14,
+    "scs_khz": 30.0,
+    "tau_rms_ns": 611.1268784559658,
+    "tau_mean_ns": 369.3966099653038,
+    "tau_res_ns": 252.5252525252525,
+    "dnu_res_hz": 2000.0,
+    "bc_khz_05": 440.3693505688227,
+    "bc_lag_05": 14.67897835229409,
+    "nu_mean_hz": -6.280684742062968,
+    "nu_rms_hz": 813.6218724741308,
+    "tc_ms_05": 0.46428571428571436,
+    "tc_lag_05": 13.0,
+    "avg_power": 3.7102822800587644e-19,
+    "rms_power": 6.091208648584256e-10,
+    "dynamic_range_db": 82.5176423534848,
+    "nmse_li_db": -1.2881155719961401,
+    "ssim_li": 0.9999999999999994
+}
