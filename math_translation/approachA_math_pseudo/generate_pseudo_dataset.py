@@ -7,6 +7,7 @@ Simulates 5G NR transmission, AWGN noise, LS pilot extraction, and 2D interpolat
 
 import os
 import sys
+import shutil
 import argparse
 import time
 import numpy as np
@@ -243,13 +244,56 @@ def generate_pseudo_dataset(
     plot_path = os.path.join(out_dir, "pseudo_dataset_comparison.png")
     plot_pseudo_samples(H_src[:4], H_pseudo_perf[:4], H_tgt_ref[:4], beta_tau, delta_nu, plot_path)
 
+    # Copy source and target note.md if present
+    def find_note_file(directory):
+        candidates = [
+            os.path.join(directory, "note.md"),
+            os.path.join(directory, "Note.md"),
+            os.path.join(directory, "NOTE.md"),
+            os.path.join(os.path.dirname(directory), "note.md")
+        ]
+        for cand in candidates:
+            if os.path.isfile(cand):
+                return cand
+        return None
+
+    src_note = find_note_file(source_dir)
+    has_src_note = False
+    if src_note:
+        dest_src = os.path.join(out_dir, "note_source.md")
+        shutil.copy2(src_note, dest_src)
+        has_src_note = True
+        print(f"  [Copied] Source note -> {dest_src}")
+
+    tgt_note = find_note_file(target_dir)
+    has_tgt_note = False
+    if tgt_note:
+        dest_tgt = os.path.join(out_dir, "note_target.md")
+        shutil.copy2(tgt_note, dest_tgt)
+        has_tgt_note = True
+        print(f"  [Copied] Target note -> {dest_tgt}")
+
     note_path = os.path.join(out_dir, "note.md")
-    with open(note_path, "w") as fh:
+    with open(note_path, "w", encoding="utf-8") as fh:
         fh.write("# Physical Pseudo-Dataset Generation Report\n\n")
+        fh.write("## General Information\n\n")
         fh.write(f"- **Method:** Approach A (Analytical Delay Dilation & Doppler Modulation)\n")
+        fh.write(f"- **Source Dataset Directory:** `{os.path.abspath(source_dir)}`\n")
+        fh.write(f"- **Target Dataset Directory:** `{os.path.abspath(target_dir)}`\n")
+        fh.write(f"- **Output Dataset Directory:** `{os.path.abspath(out_dir)}`\n")
         fh.write(f"- **Estimated Beta_tau:** `{beta_tau:.4f}`\n")
         fh.write(f"- **Estimated Delta_nu:** `{delta_nu:.2f} Hz`\n")
         fh.write(f"- **Scaling Mode:** `{scale_mode}`\n\n")
+
+        if has_src_note or has_tgt_note:
+            fh.write("## Linked Reference Notes\n\n")
+            if has_src_note:
+                fh.write("- [Source Dataset Note](note_source.md)\n")
+            if has_tgt_note:
+                fh.write("- [Target Dataset Note](note_target.md)\n")
+            fh.write("\n")
+
+        fh.write("## Metric Summary\n\n")
         fh.write("| SNR (dB) | Samples | 2D Linear Interp NMSE (dB) | SSIM |\n")
         fh.write("| :---: | :---: | :---: | :---: |\n")
         for rec in summary_records:
