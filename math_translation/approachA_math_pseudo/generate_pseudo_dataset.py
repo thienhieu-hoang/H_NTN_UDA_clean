@@ -141,9 +141,11 @@ def generate_pseudo_dataset(
     else:
         print(f"  [Manual Override] Relative Doppler Shift Delta_nu: {delta_nu:.2f} Hz")
 
-    # Target RMS scaling calibration
+    # Target scaling parameters calibration
     tgt_power = np.mean(np.abs(H_tgt_ref) ** 2)
     tgt_rms = np.sqrt(tgt_power)
+    tgt_r_min, tgt_r_max = np.min(H_tgt_ref.real), np.max(H_tgt_ref.real)
+    tgt_i_min, tgt_i_max = np.min(H_tgt_ref.imag), np.max(H_tgt_ref.imag)
     print(f"  [Calibration] Target Reference RMS: {tgt_rms:.6e}\n")
 
     summary_records = []
@@ -177,12 +179,28 @@ def generate_pseudo_dataset(
         src_rms = np.sqrt(np.mean(np.abs(H_pseudo_perf) ** 2, axis=(1, 2), keepdims=True)) + 1e-30
         if scale_mode.lower() == "rms":
             H_pseudo_perf = H_pseudo_perf * (tgt_rms / src_rms)
-        elif scale_mode.lower() == "standardize":
+        elif scale_mode.lower() in ["standardize", "std"]:
             tgt_mean = np.mean(H_tgt_ref)
             tgt_std = np.std(H_tgt_ref)
             src_mean = np.mean(H_pseudo_perf, axis=(1, 2), keepdims=True)
             src_std = np.std(H_pseudo_perf, axis=(1, 2), keepdims=True) + 1e-30
             H_pseudo_perf = (H_pseudo_perf - src_mean) / src_std * tgt_std + tgt_mean
+        elif scale_mode.lower() in ["minmax", "min-max"]:
+            # Min-Max normalization to [-1, 1], then rescaled to Target dynamic range
+            r_min = np.min(H_pseudo_perf.real, axis=(1, 2), keepdims=True)
+            r_max = np.max(H_pseudo_perf.real, axis=(1, 2), keepdims=True)
+            i_min = np.min(H_pseudo_perf.imag, axis=(1, 2), keepdims=True)
+            i_max = np.max(H_pseudo_perf.imag, axis=(1, 2), keepdims=True)
+            dr_src = np.where(r_max - r_min == 0, 1.0, r_max - r_min)
+            di_src = np.where(i_max - i_min == 0, 1.0, i_max - i_min)
+            norm_r = 2.0 * (H_pseudo_perf.real - r_min) / dr_src - 1.0
+            norm_i = 2.0 * (H_pseudo_perf.imag - i_min) / di_src - 1.0
+            # Descale with Target min/max range
+            dr_tgt = tgt_r_max - tgt_r_min if (tgt_r_max - tgt_r_min) != 0 else 1.0
+            di_tgt = tgt_i_max - tgt_i_min if (tgt_i_max - tgt_i_min) != 0 else 1.0
+            pseudo_r = (norm_r + 1.0) / 2.0 * dr_tgt + tgt_r_min
+            pseudo_i = (norm_i + 1.0) / 2.0 * di_tgt + tgt_i_min
+            H_pseudo_perf = pseudo_r + 1j * pseudo_i
 
         # Step C: 5G NR Transmission Simulation (Pilots + AWGN)
         # Extract true pilot values at pilot positions
@@ -283,7 +301,16 @@ def generate_pseudo_dataset(
         fh.write(f"- **Output Dataset Directory:** `{os.path.abspath(out_dir)}`\n")
         fh.write(f"- **Estimated Beta_tau:** `{beta_tau:.4f}`\n")
         fh.write(f"- **Estimated Delta_nu:** `{delta_nu:.2f} Hz`\n")
-        fh.write(f"- **Scaling Mode:** `{scale_mode}`\n\n")
+        fh.write(f"- **Scaling / Preprocessing Mode:** `{scale_mode.lower()}`\n")
+        if scale_mode.lower() == "rms":
+            fh.write(f"  - *Mechanism:* Normalized to unit RMS and rescaled by Target RMS power (`{tgt_rms:.6e}`).\n")
+        elif scale_mode.lower() in ["standardize", "std"]:
+            fh.write(f"  - *Mechanism:* Standardized to zero-mean unit-variance, then rescaled to Target mean and std.\n")
+        elif scale_mode.lower() in ["minmax", "min-max"]:
+            fh.write(f"  - *Mechanism:* Normalized to `[-1, 1]`, then rescaled to Target dynamic range `[min, max]`.\n")
+        else:
+            fh.write(f"  - *Mechanism:* No energy rescaling applied (`none`).\n")
+        fh.write("\n")
 
         if has_src_note or has_tgt_note:
             fh.write("## Linked Reference Notes\n\n")
@@ -356,7 +383,8 @@ if __name__ == '__main__':
     parser.add_argument("--delta-nu", type=float, default=None, help="Relative Doppler shift in Hz (auto-estimated if omitted)")
     parser.add_argument("--snr-list", nargs="+", type=int, default=[-10, -5, 0, 5, 10, 15])
     parser.add_argument("--num-samples", type=int, default=None)
-    parser.add_argument("--scale-mode", type=str, default="rms", choices=["rms", "standardize", "none"])
+    parser.add_argument("--scale-mode", type=str, default="rms", choices=["rms", "standardize", "std", "minmax", "min-max", "none"],
+                        help="Energy scaling mode to match Target domain (rms, standardize/std, minmax/min-max, none)")
 
     args = parser.parse_args()
     generate_pseudo_dataset(
