@@ -166,3 +166,110 @@ Once the pseudo dataset is generated in `generatedChan_mathPseudo/`, proceed wit
    - Results, BER curves, NMSE, and comparison plots are saved in:
      `inference\math_pseudo_<name>__<target_name>\`
    - Run the 3-stage inference pipeline using `.\inference\cmd_auto_s1_2_3.ps1`.
+
+---
+
+## 6. Mathematical Foundations & Blind Estimation Mechanics
+
+This section details the analytical equations, pilot structures, and statistical aggregation methods used in Step 1.
+
+### 6.1. Pilot Geometry: The $44 \times 2$ Sparse Matrix
+In 5G NR DM-RS Type 2 Mapping Type A (Pos 2, Add Pos 1), pilots are placed on:
+- **Time (OFDM symbols)**: $l \in \{2, 11\}$ (0-based indexing), giving $N_{\text{sym, pilot}} = 2$ pilot columns separated by $\Delta l = 9$ symbols.
+- **Frequency (Subcarriers)**: In each of the $11$ Resource Blocks, $4$ subcarriers are allocated ($[0, 1, 6, 7]$ per RB), giving $11 \times 4 = 44$ pilot rows.
+- **Total Sparse Observations**: $44 \times 2 = 88$ Resource Elements (REs) per slot.
+
+Thus, for each realization $n$, the receiver observes a sparse matrix $H_{\text{pilot}}[n] \in \mathbb{C}^{44 \times 2}$.
+
+---
+
+### 6.2. How Autocorrelation is Computed Across the Dataset
+
+> **Key Rule: Sample-wise product, then Ensemble-averaged over all $N$ realizations.**
+> We do **NOT** compute correlation on an isolated realization (which is noisy), nor do we assume a single scalar. The expectation $\mathbb{E}[\cdot]$ is computed across all $N$ channel samples in the dataset.
+
+#### A. Frequency Autocorrelation $R_f(\Delta k)$ (Delay Dilation $\beta_\tau$)
+For each pilot symbol column $l \in \{2, 11\}$, we evaluate the correlation between pairs of pilot subcarriers $(k_i, k_j)$ separated by lag $\Delta k = k_j - k_i$:
+
+$$R_f(\Delta k) = \frac{1}{|\mathcal{S}_{\Delta k}|} \sum_{(k_i, k_j) \in \mathcal{S}_{\Delta k}} \left( \frac{1}{N} \sum_{n=1}^N H_{\text{pilot}}[n, k_j, l] \cdot H_{\text{pilot}}^*[n, k_i, l] \right)$$
+
+where $\mathcal{S}_{\Delta k}$ is the set of pilot subcarrier pairs with distance $\Delta k$.
+- The resulting curve $R_f(\Delta k)$ is normalized by $R_f(0) = 1.0$.
+- **Coherence Bandwidth Lag ($k^*$):** We find the continuous subcarrier lag $k^*$ where correlation drops to threshold $\eta = 0.5$:
+  $$R_f(k^*) = 0.5$$
+- **Estimating Dilation $\beta_\tau$:**
+  By the Fourier scaling theorem, delay spread is inversely proportional to coherence bandwidth ($\tau_{\text{rms}} \propto \frac{1}{B_c} \propto \frac{1}{k^*}$):
+  $$\beta_\tau = \frac{k_{\text{source}}^*}{k_{\text{target}}^*}$$
+  - In `A100` ($100\text{ ns}$): $k_{\text{source}}^* \approx 50+$ subcarriers (slow decay).
+  - In `DUR300` ($300\text{ ns}$): $k_{\text{target}}^* \approx 15.2$ subcarriers ($3.3\times$ faster decay).
+  - Yields the blind estimate: $\beta_\tau = \frac{50.2}{15.2} \approx \mathbf{3.30}$.
+
+#### B. Time Autocorrelation & Bulk Doppler Shift $\Delta\nu$
+Between the two pilot columns $l_1 = 2$ and $l_2 = 11$, the time distance is:
+$$\Delta t = (l_2 - l_1) \cdot T_{\text{sym}} = 9 \times 35.71\ \mu\text{s} \approx 3.214 \times 10^{-4}\text{ s}$$
+
+For each common subcarrier $k$, we compute the ensemble temporal cross-correlation across all $N$ realizations:
+$$R_t(\Delta t) = \frac{1}{44} \sum_{k=1}^{44} \left( \frac{1}{N} \sum_{n=1}^N H_{\text{pilot}}[n, k, l_2] \cdot H_{\text{pilot}}^*[n, k, l_1] \right)$$
+
+The argument (angle) of $R_t$ gives the mean Doppler phase progression:
+$$\theta = \text{angle}\big(R_t(\Delta t)\big) = 2\pi \cdot \nu_{\text{bulk}} \cdot \Delta t$$
+
+The relative bulk Doppler shift between Target and Source is:
+$$\Delta\nu = \frac{\text{angle}\left( e^{j(\theta_{\text{target}} - \theta_{\text{source}})} \right)}{2\pi \cdot \Delta t} \quad [\text{Hz}]$$
+
+---
+
+### 6.3. Are Parameters Extracted from Source Labels or Pilot Elements?
+
+| Parameter | Source Domain Input | Target Domain Input | Why? |
+| :--- | :--- | :--- | :--- |
+| **Delay Dilation ($\beta_\tau$)** | Sparse pilots ($44 \times 2$) extracted from Source | Sparse LS pilots ($44 \times 2$) from Target | **Blindness**: Compares identical pilot structures so that no target labels or prior knowledge of $\tau_{\text{rms}}$ are needed. |
+| **Doppler Shift ($\Delta\nu$)** | Temporal correlation on Source pilots | Temporal correlation on Target pilots | Blindly measures the differential phase slope between the two domains. |
+| **RMS Energy Level** | Full grid $H_{\text{src}}$ ($132 \times 14$) | Sparse pilots or $H_{\text{tgt}}$ reference | Matches energy level so AWGN noise power is calibrated. |
+
+> [!NOTE]
+> **No manual parameter cheating**: We do **not** take the numbers $100\text{ ns}$ or $300\text{ ns}$ from simulation metadata. The generator estimates $\beta_\tau$ and $\Delta\nu$ **purely from the $44 \times 2$ pilot observations**, proving that the approach works autonomously on unlabeled receiver measurements.
+
+
+---
+
+### 6.4. Where and When Does Scaling Happen? (Before or After Autocorrelation?)
+
+> **Key Rule: Autocorrelation is computed on RAW pilots WITHOUT energy scaling. Energy scaling happens AFTER physical warping (Step B).**
+
+Here is why:
+
+#### 1. Why Autocorrelation Does NOT Need Prior Scaling:
+Normalized autocorrelation functions $R_f(\Delta k)$ and $R_t(\Delta t)$ are **scale-invariant by mathematical definition**:
+- In frequency correlation:
+  $$R_f(\Delta k) = \frac{\mathbb{E}[H(k + \Delta k) \cdot H^*(k)]}{R_f(0)} = \frac{\mathbb{E}[H(k + \Delta k) \cdot H^*(k)]}{\mathbb{E}[|H(k)|^2]}$$
+  Any constant scaling factor $c$ on $H$ cancels out in numerator and denominator: $\frac{c^2}{c^2} = 1.0$.
+- In time correlation:
+  The Doppler shift is determined by the **phase angle** $\theta = \text{angle}(\mathbb{E}[H(t_2) H^*(t_1)])$, which is purely rotational and unaffected by scalar multiplication $c > 0$.
+
+Therefore, **we do not scale before computing autocorrelation**. The physical parameters $\beta_\tau$ and $\Delta\nu$ are extracted directly from the raw pilot observations.
+
+#### 2. Exact Chronological Order of Operations:
+```
+  [Raw Source Channels & Raw Target Pilots]
+                     │
+                     ▼
+  1. Compute Normalized Autocorrelation (Scale-Invariant)
+     ──► Extracts: β_τ and Δν
+                     │
+                     ▼
+  2. Physical Coordinate Warping
+     ──► Delay Dilation:  H(f) dilated by β_τ
+     ──► Doppler Shift:   Multiplied by exp(j 2π Δν t)
+     ──► Output: H_pseudo_perf (correct shape & fast ripples, but still Source power ~ 1.7e-8)
+                     │
+                     ▼
+  3. ★ ENERGY RESCALING HAPPENS HERE (Step B) ★
+     ──► Measures: RMS_src = sqrt(E[|H_pseudo_perf|²])
+     ──► Rescales: H_pseudo_perf = H_pseudo_perf * (RMS_tgt / RMS_src)
+     ──► Output: Pseudo channel now has both correct shape AND target power (~ 6.1e-10)
+                     │
+                     ▼
+  4. 5G NR AWGN Realization & 2D Linear Interpolation (Step C & D)
+     ──► Noise variance σ² calibrated to the newly rescaled pilot power: σ² = P_pilot / 10^(SNR/10)
+```
