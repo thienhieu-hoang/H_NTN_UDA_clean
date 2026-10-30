@@ -12,7 +12,75 @@ Its sole objective is to synthetically bridge domain gaps between a Source scena
 
 ---
 
-## 2. Dataset Storage Location
+## 2. Detailed Generation Flow & Scaling Methodology
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                   INPUT CHANNELS (TIME-FREQUENCY)                                │
+│  Source Ground Truth H_src (132x14, 100 ns, 70°)   Target Reference Pilots H_ls^tgt (88 pilots)  │
+└────────────────────────────────┬──────────────────────────────────────────┬──────────────────────┘
+                                 │                                          │
+                                 │        1. BLIND PARAMETER ESTIMATION     │
+                                 │        Autocorrelation on sparse pilots  ▼
+                                 │        ► Delay Dilation:   β_τ ≈ 3.30
+                                 │        ► Doppler Shift:    Δν  ≈ -2.13 Hz
+                                 │        ► Target Level:     RMS_tgt or (μ_tgt, σ_tgt)
+                                 │
+                                 ▼
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP A: PHYSICAL MATHEMATICAL WARPING (COORDINATE TRANSFORMATION)                                │
+│ • Delay Dilation:  Stretches frequency axis by factor β_τ (Bc compressed 3.3x, fast ripples)     │
+│ • Doppler Shift:   Applies phase rotation exp(j * 2π * Δν * t) across OFDM symbols               │
+│                    H_pseudo_perf = Warp(H_src, β_τ, Δν)                                          │
+└────────────────────────────────┬─────────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP B: ENERGY & PATH LOSS SCALING (--scale-mode)                                                │
+│ Fixes the ~15-30x amplitude difference between Source and Target simulation tools:               │
+│                                                                                                  │
+│ • "rms" (Default & Recommended):                                                                 │
+│     Calibrates total power to match target domain without altering Rayleigh fading zero-mean:    │
+│     H_pseudo = H_pseudo_perf * (RMS_tgt / RMS_src)                                               │
+│                                                                                                  │
+│ • "standardize" / "std":                                                                         │
+│     Aligns mean and standard deviation to target distribution:                                   │
+│     H_pseudo = (H_pseudo_perf - μ_src) / σ_src * σ_tgt + μ_tgt                                   │
+└────────────────────────────────┬─────────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP C: 5G NR TRANSMISSION & NOISE REALIZATION (Per Target SNR: -10 to +15 dB)                   │
+│ 1. Extract true pilot values at DMRS Type 2 Port 1 locations: H_true_pilots (88 REs)             │
+│ 2. Calibrate complex AWGN variance to pilot power: σ² = P_pilot / 10^(SNR/10)                    │
+│ 3. Add noise to simulate real receiver observation: H_ls_pilots = H_true_pilots + Noise         │
+└────────────────────────────────┬─────────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP D: 2D LINEAR INTERPOLATION & METRIC CALCULATION                                             │
+│ • Reconstruct initial baseline channel: H_li = Interpolate2D(H_ls_pilots)                        │
+│ • Compute baseline NMSE (dB) and SSIM against pseudo ground-truth H_pseudo                       │
+└────────────────────────────────┬─────────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP E: SAVING STANDARD DATASET                                                                  │
+│ Saves matlabNTN.mat under SNR_<snr>dB/ with variables:                                           │
+│ H_perfect, H_li, H_ls_pilots, pilot_rows, pilot_cols, beta_tau, delta_nu                         │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Why Energy Rescaling is Required:
+1. **Physical Path Loss Discrepancy**: Source `A100` ($70^\circ$, MATLAB) has an RMS power of $\approx 1.7 \times 10^{-8}$, whereas Target `DUR300` ($30^\circ$, OpenNTN) has an RMS power of $\approx 6.1 \times 10^{-10}$ (nearly a $30\times$ difference). Warping changes channel shape and frequency ripples, but does **not** adjust power. Rescaling ensures pseudo signal levels match authentic target levels.
+2. **Accurate AWGN Realization**: In Step C, noise power is calibrated against pilot power. Proper scaling ensures realistic receiver SNR and noise floors.
+3. **Downstream Neural Network Preprocessing Alignment**:
+   - Models trained with `_rms` (e.g. `LI_DnCNN_rms`, `LS_Attention_rms`) should be trained on pseudo datasets generated with `--scale-mode rms`.
+   - Models trained with `_standardize` (e.g. `LS_Attention_standardize`) should be trained on pseudo datasets generated with `--scale-mode standardize`.
+
+---
+
+## 3. Dataset Storage Location
 
 The generated pseudo datasets are saved under the central repository directory:
 ```
@@ -24,16 +92,15 @@ generatedChan_mathPseudo/
     ├── SNR_5dB/matlabNTN.mat
     ├── SNR_10dB/matlabNTN.mat
     ├── SNR_15dB/matlabNTN.mat
-    ├── pseudo_dataset_comparison.png  # Qualitative visual comparison
-    └── note.md                        # Summary metrics & estimated dilation/Doppler
+    ├── note.md                        # Summary metrics, estimated dilation/Doppler & links
+    ├── note_source.md                 # Copied source scenario configuration
+    ├── note_target.md                 # Copied target scenario configuration
+    └── pseudo_dataset_comparison.png  # Qualitative visual comparison
 ```
-
-> [!NOTE]
-> For example: `generatedChan_mathPseudo\A100_DUR300_LS\` represents a pseudo dataset generated from source `A100` targeting `DUR300` using LS pilot reference.
 
 ---
 
-## 3. Running the Generator
+## 4. Running the Generator
 
 The Python script uses `argparse` command-line argument parsers, meaning **you do not need to modify the Python code**. 
 
@@ -58,7 +125,7 @@ You can configure and trigger dataset generation directly from PowerShell via [`
 
 ---
 
-## 4. End-to-End Workflow & Next Steps
+## 5. End-to-End Workflow & Next Steps
 
 Once the pseudo dataset is generated in `generatedChan_mathPseudo/`, proceed with the standard training and evaluation pipeline:
 
@@ -99,4 +166,3 @@ Once the pseudo dataset is generated in `generatedChan_mathPseudo/`, proceed wit
    - Results, BER curves, NMSE, and comparison plots are saved in:
      `inference\math_pseudo_<name>__<target_name>\`
    - Run the 3-stage inference pipeline using `.\inference\cmd_auto_s1_2_3.ps1`.
-
