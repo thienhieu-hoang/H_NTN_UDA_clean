@@ -1,6 +1,7 @@
 __pycache__/
 *.h5
 *.mat
+*.npy
 !single_dataset/**/*.mat
 !CORAL/**/*.mat
 !single_dataset/**/*.h5

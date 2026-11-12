@@ -1,10 +1,13 @@
-# Dataset Overview: NTN TDL-A (2.18 GHz, 600 km, 70°, 30 kHz)
+# Dataset Overview: NTN-TDL-A (2.18 GHz, 600 km, 70°, 30 kHz)
 
 ## General Information
 
-- **Channel Model:** NTN TDL-A (NLOS)
+- **Channel Model:** NTN-TDL-A (LOS (Ricean))
 - **Data Generator:** MATLAB 5G Toolbox
-- **Available SNR Levels:** `-10 dB`, `-5 dB`, `0 dB`, `5 dB`, `10 dB`, `15 dB`
+- **Total Samples:** 20000 drops (Train: 16000, Val: 2000, Test: 2000)
+- **Available Files:** `H_train.npy` (16000), `H_val.npy` (2000), `H_test.npy` (2000)
+- **Data Type:** `complex64`, shape `(N, 132, 14)`
+- **Power Normalization:** Raw unnormalized channel power (original physical channel scale preserved)
 
 ---
 
